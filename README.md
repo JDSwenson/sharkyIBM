@@ -35,7 +35,10 @@ Explain a potential use case …
 
 ## Example
 
-This is a basic example which shows you how to solve a common problem:
+This is a basic example showing how to prepare input data for two
+populations with different life histories and biological attributes,
+simulate those populations forward in time, and then draw 100 samples
+from each population over the final 5 years of the simulation.
 
 ``` r
 library(sharkyIBM)
