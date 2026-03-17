@@ -10,12 +10,13 @@ create.pop.data(
   pop_number,
   pop_size,
   mating_periodicity,
-  maturity_age = NULL,
+  f_maturity_age = NULL,
   litter_size = NULL,
   YOY_survival = NULL,
   stable = TRUE,
   F_by_age = NULL,
-  female_fraction = 0.5
+  female_fraction = 0.5,
+  age_length_df = NULL
 )
 }
 \arguments{
@@ -31,13 +32,13 @@ be max_age + 1, including s0.}
 
 \item{mating_periodicity}{Integer. 1 = annual, 2 = biennial, etc.}
 
-\item{maturity_age}{Optional integer. Used to derive fecundity if F_by_age is NULL.}
+\item{f_maturity_age}{Optional integer. Used to derive fecundity if F_by_age is NULL. We do not need maturity age of males for this.}
 
 \item{litter_size}{Optional numeric > 0. Mean pups per litter.}
 
 \item{YOY_survival}{Optional numeric. Overrides s0 if stable = FALSE.}
 
-\item{stable}{Logical. If TRUE, solve for s0 using Euler–Lotka.}
+\item{stable}{Logical. If TRUE, solve for s0 using Euler-Lotka.}
 
 \item{F_by_age}{Optional numeric vector (length max_age + 1). Direct fecundity.}
 
@@ -47,14 +48,17 @@ be max_age + 1, including s0.}
 A list containing:
 \itemize{
 \item numbers_at_age: dataframe
-\item survival: full survival vector including age 0 and setting survival of max age to 0
-\item fecundity: fecundity vector used
+\item survival: full survival vector including age 0 and max age (which is set to 0)
+\item fecundity: vector of fecundity-by-age
 \item s0: age 0 survival
 }
+
+Currently, create.pop.data takes a single vector of survival and a single vector of fecundity, which are applied to all populations. Future updates will allow for population-specific survival and fecundity.
 }
 \description{
-Define parameters for population simulation
+Format and prepare input data for individual-based population simulation from user-defined input values.
 }
 \examples{
-create.pop.data(max_age = 10, survival = c(rep(0.8, times = max_age)), pop_number = 3, pop_size = c(1000, 20000, 50000), mating_periodicity = 2, maturity_age = 5, litter_size = 7)
+input_pop <- create.pop.data(max_age = 10, survival = c(rep(0.8, times = 10)), pop_number = 3, pop_size = c(1000, 20000, 50000), mating_periodicity = 2, maturity_age = 5, litter_size = 7)
+input_pop
 }

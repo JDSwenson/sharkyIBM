@@ -1,136 +1,204 @@
-simulate.pop <- function(init_pop_size,
-                         init_prop_female,
-                         Nages,
+#' Simulate age-structured shark populations and sampling
+#'
+#' Runs a forward-time, age-structured simulation across one or more populations,
+#' including reproduction, growth, and survival, with optional sampling of
+#' individuals in specified years. Returns yearly population metrics and sampled
+#' individuals suitable for downstream analysis.
+#'
+#' @param init_pop_size Integer vector. Initial population size per population (order should match columns of `Nages`).
+#' @param init_prop_female Numeric scalar in \[0, 1\]. Initial proportion female in the population.
+#' @param Nages Integer matrix. Rows are ages, columns are populations; entries give counts used to build initial ages.
+#' @param mating_periodicity Integer (>= 1). Female reproductive cycle periodicity (e.g., 1 = annual, 2 = biennial).
+#' @param repro_age Integer (>= 0). Minimum female age for reproduction (knife-edged maturity).
+#' @param YOY_survival Numeric in \[0, 1\]. Survival parameter for young-of-year (if not overridden by a survival table).
+#' @param juvenile_survival Numeric in \[0, 1\]. Survival parameter for juveniles (if not overridden).
+#' @param adult_survival Numeric in \[0, 1\]. Survival parameter for adults (if not overridden).
+#' @param max_age Integer (>= 0). Individuals at or above this age are removed (die of senescence).
+#' @param num_mates Integer vector or scalar. Number of mates per mother (sampled with replacement).
+#' @param ff List or numeric. Fecundity-related parameters passed to offspring-generation helpers.
+#' @param burn_in Integer (>= 0). Number of initial years simulated before analysis years.
+#' @param num_years Integer (>= 1). Number of analysis years after burn-in.
+#' @param age_length_df Data frame/tibble. Must contain at least `age.x`, `mean_length`, and `age_length_sd`.
+#' @param movement_array Three-dimensional array of age-based movement probabilities to locations where individual animals will be sampled. Dimensions should be \[age, sampling_location, population\]. In other words, each population should have its own matrix, ordered the same as the populations. The array should include age 0 individuals, so the number of rows should be max_age+1, and the movement probability for age a should be in the row a+1. For example, the probability to find age 6 individuals from population 1 at sampling location 4 would be specified in the movement_array \[7, 4, 1\].
+#' @param infertility Numeric in \[0, 1\] specifying the proportion of the population that is infertile throughout their lives. This characteristic is assigned at birth and stays with an individual throughout its life.
+#'
+#' @details
+#' This function orchestrates initialization, breeding, growth, survival, and optional
+#' sampling of individuals. It relies on several helper functions (e.g., for offspring
+#' generation, reproduction probabilities, dispersal, and sampling) that are defined
+#' elsewhere in the package.
+#'
+#' The return value is a list with population metrics per year and any sampled
+#' individuals.
+#'
+#' @return A list with two elements:
+#' \itemize{
+#'   \item \code{pop.size}: data frame/tibble of population metrics by year and population.
+#'   \item \code{samples.df}: data frame/tibble of sampled individuals (may be empty if no sampling occurs).
+#' }
+#' The list is returned invisibly.
+#'
+#' @examples
+#' \dontrun{
+#' # Minimal scaffold showing inputs (uses tiny sizes and fake tables)
+#' init_pop_size <- c(MX = 10, ES = 8, EC = 12)
+#' Nages <- matrix(c(3,4,3,
+#'                   4,2,4,
+#'                   3,2,5), nrow = 3, byrow = TRUE)
+#' colnames(Nages) <- names(init_pop_size)
+#'
+#' age_length_df <- tibble::tibble(
+#'   age = 0:10,
+#'   mean_length = seq(80, 130, length.out = 11),
+#'   age_length_sd = rep(8, 11)
+#' )
+#'
+#' out <- simulate.pop(
+#'   init_pop_size = init_pop_size,
+#'   init_prop_female = 0.5,
+#'   Nages = Nages,
+#'   mating_periodicity = 1,
+#'   repro_age = 5,
+#'   YOY_survival = 0.7,
+#'   juvenile_survival = 0.85,
+#'   adult_survival = 0.92,
+#'   max_age = 20,
+#'   num_mates = 1:2,
+#'   ff = list(),
+#'   burn_in = 0,
+#'   num_years = 1,
+#'   age_length_df = age_length_df
+#' )
+#' }
+#'
+#' @seealso
+#' Helper functions you will define and document separately, e.g.,
+#' offspring generation and sampling utilities.
+#'
+#' @export
+
+simulate.pop <- function(input_data,
                          mating_periodicity,
-                         repro_age,
-                         YOY_survival,
-                         juvenile_survival,
-                         adult_survival,
-                         max_age,
+                         f_maturity_age,
+                         m_maturity_age,
                          num_mates,
-                         ff,
-                         burn_in,
                          num_years,
-                         age_length_df
+                         female_fraction = 0.5,
+                         age_length_df = NULL,
+                         movement_array = NULL,
+                         infertility = NULL
                          ) {
+
+  # Save initial values as distinct R objects
+  init_pop_size <- input_data$numbers_at_age
+  max_age <- max(input_data$numbers_at_age$age)
+  f <- max(input_data$fecundity)
+  YOY_survival <- input_data$s0
+  juvenile_survival <- input_data$survival[2:(maturity_age-1)]
+  adult_survival <- input_data$survival[maturity_age:(max_age-1)]
+  ff <- f/female_fraction * mating_periodicity/mean(num_mates) # Female fecundity per breeding event at equilibrium
+
+
+  # Make initial
+  init_ages <- rep(init_pop_size$age, times = init_pop_size$N)
+  init_pops <- rep(init_pop_size$population, times = init_pop_size$N)
+  init_sex <- sample(
+    c("F", "M"),
+    size = sum(init_pop_size$N),
+    prob = c(female_fraction, 1 - female_fraction),
+    replace = T)
+  init_repro_cycle <- sample(
+    c(1:mating_periodicity),
+    size = sum(init_pop_size$N),
+    replace = T)
+
+  # Summarize population numbers
+  total_pop_sizes_df <- init_pop_size %>% group_by(population) %>%
+    reframe(total = sum(N, na.rm = T)) %>%
+    arrange(population)
+
+  total_pop_sizes_vec <- rep(total_pop_sizes_df$population, times = total_pop_sizes_df$total)
 
   ###############################################`
   ####---------Set up initial population-----####
   ###############################################`
-  init_ages <- NULL
-
-  # init_ages is a vector with the different ages of the individuals for all populations in a single vector.
-  for(z in 1:ncol(Nages)){
-    for(y in 1:nrow(Nages)){
-      init.ages <- c(init.ages, rep(y, Nages[y, z]))
-    }
-  }
-
   # Initial population
-  init.pop <- tibble(
-
+  init_pop <- tibble(
     # Assign a random 20 character string for each individual's name
-    indv.name = map_chr(
-      1:sum(init.pop.size), # sum because we have multiple populations
+    indv_name = map_chr(
+      1:sum(init_pop_size$N), # sum because we have multiple populations
       ~paste(sample(letters, size = 20, replace = T),
              collapse="")
     ),
-
-    birth.year = -1, # This is a place holder for individuals born within the simulation
-    age.x = init.ages, # Assign ages based on the stable age distribution
-    mother.x = "xxxxx", # The individuals in the initial population do not have known mothers
-    father.x = "xxxxx", # The individuals in the initial population do not have known fathers
-
-    sex = map_chr( # Randomly draw sex based on the proportions set in the parameter section
-      1:sum(init.pop.size),
-      ~sample(c('F','M'),
-              size = 1,
-              prob = c(init.prop.female, 1-init.prop.female))
-    ),
-
-    repro.cycle = map_dbl(
-      1:sum(init.pop.size),
-      ~sample(1:mating.periodicity, size = 1) # Randomly assign whether this individual mother will breed in even or odd years (relevant for multiennial breeding only)
-    )
-  )
-
-
-  # Assign populations based on row numbers
-  total.pop.sizes <- cumsum(init.pop.size)
-  row.numbers <- seq(1:sum(init.pop.size))
-
-  init.population <- sapply(row.numbers, function(row_num) {
-    for (i in seq_along(total.pop.sizes)) {
-      if (row_num <= total.pop.sizes[i]) {
-        return(populations[i])
-      }
-    }
-  })
-
-  init.pop2 <- init.pop %>%
-    mutate(population = init.population)
-
-
-  # Join with age.length table, assign age, and repro probability
-  init.pop2 <- init.pop2 %>%
-    lazy_dt() %>%
-    left_join(age.length.df, by = "age.x") %>%
-    mutate(indv_length = rtruncnorm(n(), mean = mean_length, sd = age_length_sd, a = 0.2)) %>% #Assign individual length -- make sure nobody grows backwards, so set lower limit of 0.2
-    mutate(beta_0 = case_when(
-      population == "MX" ~ MX.beta.0,
-      population == "ES" ~ ES.beta.0,
-      population == "EC" ~ EC.beta.0,
+    birth_year = -1, # This is a place holder for individuals born within the simulation
+    age = init_ages, # Assign ages based on the stable age distribution
+    mother = "xxxxx", # The individuals in the initial population do not have known mothers
+    father = "xxxxx", # The individuals in the initial population do not have known fathers
+    sex = init_sex,
+    population = total_pop_sizes_vec) %>%
+    mutate(repro_cycle = case_when(
+      sex == "F" ~ init_repro_cycle[row_number()],
       TRUE ~ NA),
-      beta_1 = case_when(
-        population == "MX" ~ MX.beta.1,
-        population == "ES" ~ ES.beta.1,
-        population == "EC" ~ EC.beta.1,
-        TRUE ~ NA)) %>% # Save values for growth curve so we can vectorize with case_when
-    as_tibble() %>%
-    mutate(repro_prob = case_when( # Store probability of reproduction
-      age.x < 5 ~ 0, # No individuals younger than age 5 will reproduce (5 is an arbitrary number)
-      age.x >= 5 ~ repro.prob(beta.0 = beta_0, beta.1 = beta_1, TLflex = indv_length),
-      TRUE ~ NA))
+      fertile = rbinom(n(), size = 1, prob = 1 - infertility) == 1
+      )
 
-  #head(init.pop2)
-
-  # Confirmed - June 2024
-  # Check that counts by ages and sex align with expectations
-  # init.pop2 %>% dplyr::count(age.x, population) %>%
-  #   arrange(population, age.x) %>%
-  #   print(n = 100)
-  #
-  # init.pop2 %>% count(sex, population) %>%
-  #   arrange(population, sex)
+  # TO DO: Add code to quickly and easily simulate initial starting lengths for all individuals from age_length_df (if supplied). Might want to just add to the tibble above, if can simulate in create_input_data.R script.
+# if(!is.null(age_length_df)){
+#   # Join with age.length table, assign age, and repro probability
+#   init_pop2 <- init_pop %>%
+#     lazy_dt() %>%
+#     left_join(age_length_df, by = "age") %>%
+#     mutate(indv_length = rtruncnorm(n(), mean = mean_length, sd = age_length_sd, a = 0.2)) %>% #Assign individual length -- make sure nobody grows backwards, so set lower limit of 0.2
+#     mutate(beta_0 = case_when(
+#       population == "MX" ~ MX.beta.0,
+#       population == "ES" ~ ES.beta.0,
+#       population == "EC" ~ EC.beta.0,
+#       TRUE ~ NA),
+#       beta_1 = case_when(
+#         population == "MX" ~ MX.beta.1,
+#         population == "ES" ~ ES.beta.1,
+#         population == "EC" ~ EC.beta.1,
+#         TRUE ~ NA)) %>% # Save values for growth curve so we can vectorize with case_when
+#     as_tibble() %>%
+#     mutate(repro_prob = case_when( # Store probability of reproduction
+#       age < 5 ~ 0, # No individuals younger than age 5 will reproduce (5 is an arbitrary number)
+#       age >= 5 ~ repro.prob(beta.0 = beta_0, beta.1 = beta_1, TLflex = indv_length),
+#       TRUE ~ NA))
+# }
 
   ####----------Breeding----------####
-  repro.cycle.vec <- rep(1:mating.periodicity, times = 100) # Generate a vector which will be used to determine if it is an even or odd breeding year (or a 1/3 breeding year)
+  repro_cycle_vec <- rep(1:mating_periodicity, times = num_years) # Generate a vector which will be used to determine if it is an even or odd breeding year (or a 1/3 breeding year)
 
   ####--------- For year 0 breeding
   #------------Mothers------------#
-  # Mothers will have knife-edged maturity to allow the population to stay stable (at least for now)
-  mothers <- init.pop2 %>% filter(sex=='F',
-                                  age.x>=repro.age,
-                                  repro.cycle == repro.cycle.vec[1])# Determine which females are available to breed in this year
+  # Mothers with knife-edged maturity to allow the population to stay stable (at least for now)
+  if(!is.null(f_maturity_age)){
+  mothers <- init_pop %>% filter(sex == 'F',
+                                 age >= f_maturity_age,
+                                 fertile, # filters to only keep indvs with fertile == T, but is faster without the conditional statement
+                                 repro_cycle == repro_cycle_vec[1]) # Determine which females are available to breed in this year
+  }
 
-  mothers <- mothers %>% mutate(num.mates = sample(num.mates, size = n(), replace = TRUE)) # Assign random number of mates to each mother
+  # TO DO: create vector of mothers from age-specific fecundity vector
+  mothers <- mothers %>% mutate(num_mates = sample(num_mates, size = n(), replace = TRUE)) # Assign random number of mates to each mother
+
+  # END HERE March 9, 2026
 
   # Make a new dataframe where each row corresponds to an instance of mating
   mothers2 <- mothers %>%
     lazy_dt() %>%
-    group_by(indv.name) %>%
-    slice(rep(1:n(), num.mates)) %>%
+    group_by(indv_name) %>%
+    slice(rep(1:n(), num_mates)) %>%
     ungroup() %>%
-    select(indv.name, population) %>%
-    rename(mother.x = indv.name) %>%
+    select(indv_name, population) %>%
+    rename(mother = indv_name) %>%
     as_tibble()
 
   #------------Fathers------------#
-  fathers <- init.pop2 %>% filter(sex=='M',
-                                  #init.pop$age.x>=repro.age # Uncomment for age-based maturity
-                                  runif(n()) <= repro_prob
-  ) %>% # Determine which fathers are available to breed in this year
-    select(indv.name, population)
+  fathers <- init_pop %>% filter(sex=='M',
+                                 init_pop$age >= m_maturity_age
+                                 ) %>% # Uncomment for age-based maturity
+    select(indv_name, population)
 
   if(popstructure == "structured"){
 
@@ -138,11 +206,13 @@ simulate.pop <- function(init_pop_size,
     # Confirmed that this works
     fathers_by_population <- fathers %>%
       group_by(population) %>%
-      summarise(indv.name = list(indv.name)) %>%
+      summarise(indv_name = list(indv_name)) %>%
       deframe()
 
+    # PICK UP WITH createYOY.byPop after March 17, 2026
+
     # Create dataframe of mating events and generate initial offspring from each mating event
-    YOY.df <- createYOY.init.byPop(mothers2, fathers_by_population, ff)
+    YOY_df <- createYOY.byPop(mothers2, fathers_by_population, ff, year = 0)
 
   } else if(popstructure == "panmictic"){
 

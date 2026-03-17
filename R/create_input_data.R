@@ -1,5 +1,6 @@
-
 #' Define parameters for population simulation
+#'
+#' Format and prepare input data for individual-based population simulation from user-defined input values.
 #'
 #' @param max_age Integer. Maximum age class (inclusive), so ages are 0:max_age.
 #' @param survival Numeric vector. If stable = TRUE, length must be max_age
@@ -11,30 +12,34 @@
 #' @param YOY_survival Optional numeric. Overrides s0 if stable = FALSE.
 #' @param stable Logical. If TRUE, solve for s0 using Euler-Lotka.
 #' @param F_by_age Optional numeric vector (length max_age + 1). Direct fecundity.
-#' @param maturity_age Optional integer. Used to derive fecundity if F_by_age is NULL.
+#' @param f_maturity_age Optional integer. Used to derive fecundity if F_by_age is NULL. We do not need maturity age of males for this.
 #' @param litter_size Optional numeric > 0. Mean pups per litter.
 #' @param female_fraction Numeric in (0,1]. Default 0.5.
 #'
 #' @returns A list containing:
 #'   - numbers_at_age: dataframe
-#'   - survival: full survival vector including age 0 and setting survival of max age to 0
-#'   - fecundity: fecundity vector used
+#'   - survival: full survival vector including age 0 and max age (which is set to 0)
+#'   - fecundity: vector of fecundity-by-age
 #'   - s0: age 0 survival
+#'
+#'   Currently, create.pop.data takes a single vector of survival and a single vector of fecundity, which are applied to all populations. Future updates will allow for population-specific survival and fecundity.
 #' @export
 #'
 #' @examples
-#' create.pop.data(max_age = 10, survival = c(rep(0.8, times = 10)), pop_number = 3, pop_size = c(1000, 20000, 50000), mating_periodicity = 2, maturity_age = 5, litter_size = 7)
+#' input_pop <- create.pop.data(max_age = 10, survival = c(rep(0.8, times = 10)), pop_number = 3, pop_size = c(1000, 20000, 50000), mating_periodicity = 2, maturity_age = 5, litter_size = 7)
+#' input_pop
 create.pop.data <- function(max_age,
                             survival,
                             pop_number,
                             pop_size,
                             mating_periodicity,
-                            maturity_age = NULL,
+                            f_maturity_age = NULL,
                             litter_size = NULL,
                             YOY_survival = NULL,
                             stable = TRUE,
                             F_by_age = NULL,
-                            female_fraction = 0.5) {
+                            female_fraction = 0.5,
+                            age_length_df = NULL) {
 
   ## --------------------------- Input checks --------------------------- ##
   stopifnot(is.numeric(max_age), max_age >= 1)
@@ -60,14 +65,14 @@ create.pop.data <- function(max_age,
 
   ## --------------------------- Fecundity --------------------------- ##
   if (is.null(F_by_age) == TRUE) {
-    stopifnot(!is.null(maturity_age), !is.null(litter_size))
-    stopifnot(maturity_age >= 0, maturity_age <= max_age)
+    stopifnot(!is.null(f_maturity_age), !is.null(litter_size))
+    stopifnot(f_maturity_age >= 0, f_maturity_age <= max_age)
     stopifnot(litter_size > 0)
 
     F_by_age <- numeric(max_age + 1)
 
     # Ages are 0:max_age; indices 1:(max_age+1)
-    F_by_age[seq.int(from = maturity_age + 1L, to = max_age + 1L)] <-
+    F_by_age[seq.int(from = f_maturity_age + 1L, to = max_age + 1L)] <-
       (litter_size * female_fraction) / mating_periodicity
 
   } else {
