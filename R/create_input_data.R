@@ -12,7 +12,7 @@
 #' @param YOY_survival Optional numeric. Overrides s0 if stable = FALSE.
 #' @param stable Logical. If TRUE, solve for s0 using Euler-Lotka.
 #' @param F_by_age Optional numeric vector (length max_age + 1). Direct fecundity.
-#' @param f_maturity_age Optional integer. Used to derive fecundity if F_by_age is NULL. We do not need maturity age of males for this.
+#' @param maturity_age Optional integer. Used to derive fecundity if F_by_age is NULL. We do not need maturity age of males for this.
 #' @param litter_size Optional numeric > 0. Mean pups per litter.
 #' @param female_fraction Numeric in (0,1]. Default 0.5.
 #'
@@ -33,7 +33,7 @@ create.pop.data <- function(max_age,
                             pop_number,
                             pop_size,
                             mating_periodicity,
-                            f_maturity_age = NULL,
+                            maturity_age = NULL,
                             litter_size = NULL,
                             YOY_survival = NULL,
                             stable = TRUE,
@@ -65,14 +65,14 @@ create.pop.data <- function(max_age,
 
   ## --------------------------- Fecundity --------------------------- ##
   if (is.null(F_by_age) == TRUE) {
-    stopifnot(!is.null(f_maturity_age), !is.null(litter_size))
-    stopifnot(f_maturity_age >= 0, f_maturity_age <= max_age)
+    stopifnot(!is.null(maturity_age), !is.null(litter_size))
+    stopifnot(maturity_age >= 0, maturity_age <= max_age)
     stopifnot(litter_size > 0)
 
     F_by_age <- numeric(max_age + 1)
 
     # Ages are 0:max_age; indices 1:(max_age+1)
-    F_by_age[seq.int(from = f_maturity_age + 1L, to = max_age + 1L)] <-
+    F_by_age[seq.int(from = maturity_age + 1L, to = max_age + 1L)] <-
       (litter_size * female_fraction) / mating_periodicity
 
   } else {

@@ -7,14 +7,14 @@
 \method{simulate}{pop}(
   input_data,
   mating_periodicity,
-  f_maturity_age,
-  m_maturity_age,
+  maturity_age,
   num_mates,
   num_years,
   female_fraction = 0.5,
   age_length_df = NULL,
   movement_array = NULL,
-  infertility = NULL
+  infertility = NULL,
+  popstructure = "panmictic"
 )
 }
 \arguments{

@@ -10,12 +10,22 @@ sample_fathers <- function(population, fathers_by_pop, infertility = NULL) {
 }
 
 # Function to create offspring from each mating event where individuals only mate within their population
-createYOY.byPop <- function(mothers2, fathers_by_population, ff, year){
+# CONFIRMED that when popstructure == "structured", mating only occurs within each population - March 25, 2026
+# Optimized run time - March 25, 2026
+create.YOY <- function(mothers2, fathers_by_population, ff, year){
 
-  # Creates tibble of mating events (kinda) and then expands so that each row corresponds to a single offspring between the mother and father.
   # UPDATED MARCH 17, 2026 to use a zero-truncated Poisson distribution (assist from Copilot) so that no mating event is assigned 0 offspring.
+  # CONFIRMED that males are not being assigned a mate and then failing to breed - March 25, 2026.
+
+  if(popstructure == "structured"){
+  # Create a list where each set of potential fathers are in different list elements corresponding to their population
+  fathers_by_population <- fathers %>%
+    group_by(population) %>%
+    summarise(indv_name = list(indv_name)) %>%
+    deframe()
+
+  # Each row of mothers2 corresponds to a mating event with a different father. This function first assigns a father to each row of mothers2; then, each mating event is assigned a number of offspring based on the object ff; finally, the dataframe is expanded with uncount() so that each row corresponds to a single offspring between the mother and father.
   mating_events <- mothers2 %>%
-    lazy_dt() %>%
     mutate(
       father = map_chr(population, ~ sample_fathers(.x, fathers_by_population)),
       # zero-truncated Poisson:
@@ -27,115 +37,55 @@ createYOY.byPop <- function(mothers2, fathers_by_population, ff, year){
     ) %>%
     group_by(mother, father) %>%
     tidyr::uncount(num_off) %>%   # repeats rows 'num_off' times
-    ungroup() %>%
-    as_tibble()
+    ungroup()
 
-  #### PICK UP HERE AFTER MARCH 17
-
-  YOY.df <- mating.events %>%
-    lazy_dt() %>%
-    select(-num.off) %>%
+} else if(popstructure == "panmictic"){
+  mating_events <- mothers2 %>%
     mutate(
-      indv.name = map_chr(
-        1:n(),
-        ~paste(sample(letters, size = 20, replace = T),
-               collapse="")
-      ),
-      age.x = 0,
-      birth.year = year,
-
-      repro.cycle = map_dbl(
-        1:n(),
-        ~sample(1:mating.periodicity, size = 1, replace = TRUE)
-      ),
-
-      sex = map_chr(
-        1:n(),
-        ~sample(c('F','M'),
-                size = 1,
-                prob = c(init.prop.female, 1-init.prop.female))
-      ),
-
-      indv_length = map_dbl(
-        1:n(),
-        ~runif(n = 1, min = length.at.birth[1], max = length.at.birth[2])
-      ),
-
-      beta_0 = case_when(
-        population == "MX" ~ MX.beta.0,
-        population == "ES" ~ ES.beta.0,
-        population == "EC" ~ EC.beta.0,
-        TRUE ~ NA),
-
-      beta_1 = case_when(
-        population == "MX" ~ MX.beta.1,
-        population == "ES" ~ ES.beta.1,
-        population == "EC" ~ EC.beta.1,
-        TRUE ~ NA)
+      father = map_chr(1:n(), ~sample(fathers$indv_name, size = 1, replace = TRUE)),
+      # zero-truncated Poisson:
+      num_off = {
+        p0 <- exp(-ff)
+        u  <- runif(n())
+        qpois(p0 + u * (1 - p0), ff)
+      }
     ) %>%
-    left_join(age.length.df, by = "age.x") %>%
-    as_tibble()
-
-  return(YOY.df)
+    group_by(mother, father) %>%
+    tidyr::uncount(num_off) %>%   # repeats rows 'num_off' times
+    ungroup()
 }
 
-# Create offspring from each mating event where individuals only mate within their population
-createYOY.panmictic <- function(mothers, fathers, ff, year){
+  # How many instances of mating?
+  n <- nrow(mating_events)
 
-  mating.events <- mothers %>%
-    lazy_dt() %>%
-    mutate(father.x = map_chr(1:n(), ~sample(fathers$indv.name, size = 1, replace = TRUE))) %>%
-    ungroup() %>%
-    mutate(num.off = rpois(n(), ff)) %>%
-    group_by(mother.x, father.x) %>%
-    slice(rep(1:n(), num.off)) %>%
-    ungroup() %>%
-    as_tibble()
+  # Add indv_name, age, sex, repro_cycle, etc. to dataframe of mating instances
+  YOY_df <- mating_events
+  YOY_df$indv_name <- replicate(
+    n,
+    paste(sample(letters, 20, replace = TRUE), collapse = "")
+  )
 
-  YOY.df <- mating.events %>%
-    lazy_dt() %>%
-    select(-num.off) %>%
-    mutate(
-      indv.name = map_chr(
-        1:n(),
-        ~paste(sample(letters, size = 20, replace = T),
-               collapse="")
+  YOY_df$age <- 0L
+  YOY_df$birth_year <- year
+
+  YOY_df$sex <- sample(
+    c("F", "M"),
+    size = n,
+    replace = TRUE,
+    prob = c(female_fraction, 1 - female_fraction)
+  )
+
+  YOY_df <- YOY_df %>% mutate(
+    repro_cycle = case_when(
+      sex == "F" ~ sample(
+        c(1:mating_periodicity),
+        size = n(),
+        replace = T
       ),
-      age.x = 0,
-      birth.year = year,
+      TRUE ~ NA),
+    fertile = rbinom(n(), size = 1, prob = 1 - infertility) == 1
+  ) %>%
+    dplyr::select(indv_name, sex, age, birth_year, population, repro_cycle, mother, father)
 
-      repro.cycle = map_dbl(
-        1:n(),
-        ~sample(1:mating.periodicity, size = 1, replace = TRUE)
-      ),
-
-      sex = map_chr(
-        1:n(),
-        ~sample(c('F','M'),
-                size = 1,
-                prob = c(init.prop.female, 1-init.prop.female))
-      ),
-
-      indv_length = map_dbl(
-        1:n(),
-        ~runif(n = 1, min = length.at.birth[1], max = length.at.birth[2])
-      ),
-
-      beta_0 = case_when(
-        population == "MX" ~ MX.beta.0,
-        population == "ES" ~ ES.beta.0,
-        population == "EC" ~ EC.beta.0,
-        TRUE ~ NA),
-
-      beta_1 = case_when(
-        population == "MX" ~ MX.beta.1,
-        population == "ES" ~ ES.beta.1,
-        population == "EC" ~ EC.beta.1,
-        TRUE ~ NA)
-    ) %>%
-    left_join(age.length.df, by = "age.x") %>%
-    as_tibble()
-
-  return(YOY.df)
+  return(YOY_df)
 }
-

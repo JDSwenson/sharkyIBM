@@ -79,25 +79,25 @@
 
 simulate.pop <- function(input_data,
                          mating_periodicity,
-                         f_maturity_age,
-                         m_maturity_age,
+                         maturity_age,
                          num_mates,
                          num_years,
                          female_fraction = 0.5,
                          age_length_df = NULL,
                          movement_array = NULL,
-                         infertility = NULL
+                         infertility = NULL,
+                         popstructure = "panmictic" #panmictic or "structured"
                          ) {
 
   # Save initial values as distinct R objects
   init_pop_size <- input_data$numbers_at_age
   max_age <- max(input_data$numbers_at_age$age)
   f <- max(input_data$fecundity)
-  YOY_survival <- input_data$s0
-  juvenile_survival <- input_data$survival[2:(maturity_age-1)]
-  adult_survival <- input_data$survival[maturity_age:(max_age-1)]
+#  YOY_survival <- input_data$s0
+#  juvenile_survival <- input_data$survival[2:(maturity_age)]
+#  adult_survival <- input_data$survival[maturity_age:(max_age-1)]
   ff <- f/female_fraction * mating_periodicity/mean(num_mates) # Female fecundity per breeding event at equilibrium
-
+  survival_df <- tibble(age = c(0:max_age), survival_rate = input_data$survival)
 
   # Make initial
   init_ages <- rep(init_pop_size$age, times = init_pop_size$N)
@@ -172,17 +172,15 @@ simulate.pop <- function(input_data,
   ####--------- For year 0 breeding
   #------------Mothers------------#
   # Mothers with knife-edged maturity to allow the population to stay stable (at least for now)
-  if(!is.null(f_maturity_age)){
+  if(!is.null(maturity_age)){
   mothers <- init_pop %>% filter(sex == 'F',
-                                 age >= f_maturity_age,
+                                 age >= maturity_age,
                                  fertile, # filters to only keep indvs with fertile == T, but is faster without the conditional statement
                                  repro_cycle == repro_cycle_vec[1]) # Determine which females are available to breed in this year
   }
 
   # TO DO: create vector of mothers from age-specific fecundity vector
   mothers <- mothers %>% mutate(num_mates = sample(num_mates, size = n(), replace = TRUE)) # Assign random number of mates to each mother
-
-  # END HERE March 9, 2026
 
   # Make a new dataframe where each row corresponds to an instance of mating
   mothers2 <- mothers %>%
@@ -196,47 +194,22 @@ simulate.pop <- function(input_data,
 
   #------------Fathers------------#
   fathers <- init_pop %>% filter(sex=='M',
-                                 init_pop$age >= m_maturity_age
+                                 age >= maturity_age
                                  ) %>% # Uncomment for age-based maturity
     select(indv_name, population)
 
-  if(popstructure == "structured"){
-
-    # Create a list where each set of potential fathers are in different list elements corresponding to their population
-    # Confirmed that this works
-    fathers_by_population <- fathers %>%
-      group_by(population) %>%
-      summarise(indv_name = list(indv_name)) %>%
-      deframe()
-
-    # PICK UP WITH createYOY.byPop after March 17, 2026
-
     # Create dataframe of mating events and generate initial offspring from each mating event
-    YOY_df <- createYOY.byPop(mothers2, fathers_by_population, ff, year = 0)
-
-  } else if(popstructure == "panmictic"){
-
-    # Create dataframe of mating events and generate initial offspring from each mating event
-    YOY.df <- createYOY.init.panmictic(mothers2, fathers, ff)
-
-  }
+    YOY_df <- create.YOY(mothers2, fathers, ff, year = 0)
 
   # This dataframe holds the population at the end of the first year of the simulation
-  year.end.pop.0 <- bind_rows(init.pop2, YOY.df)
+  year_end_pop_0 <- bind_rows(init_pop, YOY_df)
 
   # And finally, we assign age-specific mortality rates to each individual and then determine whether they survive into the next year or not
-  loopy.pop <- year.end.pop.0 %>% left_join(survival.df, by = "age.x") %>%
-    rename(survival_rate = survival.rate) %>%
-    mutate(
-      survival = case_when(
-        runif(nrow(year.end.pop.0)) <= survival_rate ~ "S",
-        .default = "M"
-      )
-    )
-
+  loopy_pop <- year_end_pop_0 %>% left_join(survival_df, by = "age") %>%
+    mutate(survival = runif(n()) <= survival_rate)
 
   # At the end of year 0 ...
-  print(paste("year 0 ", names(table(loopy.pop$population)), ": N_mothers=", table(mothers2$population), ", N_pups=", table(YOY.df$population), ", N_deaths=", table(loopy.pop$population[loopy.pop$survival=="M"]), ", Total N=", table(loopy.pop$population[loopy.pop$survival=="S"]) , sep=""))
+  print(paste("year 0, Population ", names(table(loopy_pop$population)), ": N_mothers=", table(mothers2$population), ", N_pups=", table(YOY_df$population), ", N_deaths=", table(loopy_pop$population[loopy_pop$survival==FALSE]), ", Total N=", table(loopy_pop$population[loopy_pop$survival==TRUE]) , sep=""))
 
 
   #############################################################`
@@ -244,163 +217,119 @@ simulate.pop <- function(input_data,
   #############################################################`
 
   ####---------------####
-  pop.size <- data.frame() # Initialize dataframe for storing population size
+  pop_size <- data.frame() # Initialize dataframe for storing population size
 
-  loopy.list <- list() # Make list to store dataframe of population for each year, where each element corresponds to the year e.g. loopy.list[[1]] is the population from the first year -- to save space, we won't populate this for now
-  plot.list <- list() # If we want to plot number of mature/breeding females/males each year for each iteration
+  loopy_list <- list() # Make list to store dataframe of population for each year, where each element corresponds to the year e.g. loopy.list[[1]] is the population from the first year -- to save space, we won't populate this for now
+  plot_list <- list() # If we want to plot number of mature/breeding females/males each year for each iteration
 
-  samples.df <- NULL
+  samples_df <- NULL
 
-  parents.tibble <- tibble() # This will store info on offspring distribution per parent
-  moms.temp = dads.temp <- NULL
+  parents_tibble <- tibble() # This will store info on offspring distribution per parent
+  moms_temp = dads_temp <- NULL
 
-  for(v in 1:(burn.in + Num.years)){ # Loop through all of the years in the simulation - the burn in and the years that matter
+  for(v in 1:num_years){ # Loop through all of the years in the simulation - the burn in and the years that matter
 
     # Bring in the data from the previous iteration, but only include those that survive (and leave out columns that need to be updated)
-    data1 <- loopy.pop %>% dplyr::filter(survival == "S") %>%
-      dplyr::select(indv.name,
-                    birth.year,
-                    age.x,
-                    mother.x,
-                    father.x,
-                    sex,
-                    repro.cycle,
-                    population,
-                    indv_length,
-                    mean_growth_rate,
-                    growth_rate_sd,
-                    beta_0,
-                    beta_1) %>%
-      mutate(age.x = age.x+1, # Increase age by one year - happy birthday survivors!
-             indv_length = indv_length + rtruncnorm(n = n(), mean = mean_growth_rate, sd = growth_rate_sd, a = 0.2) # Increase length based on age-specific growth rate
-      ) %>%
-      dplyr::select(-c(mean_growth_rate, growth_rate_sd)) %>% # Now remove growth rate so we can assign the proper age/length-specific growth rate (after advancing the age and length)
-      left_join(age.length.df, by = "age.x") %>% # Assign appropriate growth rate
-      dplyr::select(-c(mean_length, age_length_sd)) %>%
-      mutate(repro_prob = case_when( # Male probability of breeding is based on length
-        age.x < 5 ~ 0, # No individuals younger than age 5 will reproduce (5 is an arbitrary number)
-        age.x >= 5 ~ repro.prob(beta.0 = beta_0, beta.1 = beta_1, TLflex = indv_length),
-        .default = NA)) # Store probability of reproduction
-
-    #If individuals are older than max.age, they will be killed
+    data1 <- loopy_pop %>% dplyr::filter(survival) %>%
+      mutate(age = age + 1) %>%
+      select(-c(survival_rate, survival))
+    #If individuals are older than max_age, they will be killed after they reproduce
 
     ####----------Breeding----------####
     #------------Mothers------------#
-    mothers <- data1 %>% filter(sex=='F',
-                                age.x>=repro.age,
-                                repro.cycle == repro.cycle.vec[v+1]) # Determine which females are available to breed in this year
+    mothers <- data1 %>% filter(sex == 'F',
+                                age >= maturity_age,
+                                fertile, # filters to only keep indvs with fertile == T, but is faster without the conditional statement
+                                repro_cycle == repro_cycle_vec[1]) # Determine which females are available to breed in this year
 
     # Add column that contains the number of mates each mother will mate with this year
-    mothers <- mothers %>% mutate(num.mates = sample(num.mates, size = nrow(mothers), replace = TRUE))
+    mothers <- mothers %>% mutate(num_mates = sample(num_mates, size = nrow(mothers), replace = TRUE))
 
     # Make a new row where each row corresponds to an instance of mating
     mothers2 <- mothers %>%
       lazy_dt() %>%
-      group_by(indv.name) %>%
-      slice(rep(1:n(), num.mates)) %>%
+      group_by(indv_name) %>%
+      slice(rep(1:n(), num_mates)) %>%
       ungroup() %>%
-      select(indv.name, population) %>%
-      rename(mother.x = indv.name) %>%
+      select(indv_name, population) %>%
+      rename(mother = indv_name) %>%
       as_tibble()
 
     #------------Fathers------------#
     fathers <- data1 %>% dplyr::filter(sex=='M',
-                                       #init.pop$age.x>=repro.age #Uncomment for age-based maturity
-                                       runif(n()) <= repro_prob
-    ) %>% # Determine which fathers are available to breed in this year
-      dplyr::select(indv.name, population)
+                                       age >= maturity_age
+    ) %>% # Uncomment for age-based maturity
+      select(indv_name, population)
 
-    if(popstructure == "structured"){
+    # Create dataframe of mating events and generate initial offspring from each mating event
+    YOY_df <- create.YOY(mothers2, fathers, ff, year = v)
 
-      # Create a list where each set of potential fathers are in different list elements corresponding to their population
-      # Confirmed that this works
-      fathers_by_population <- fathers %>%
-        group_by(population) %>%
-        summarise(indv.name = list(indv.name)) %>%
-        deframe()
-
-      # Create dataframe of mating events, and then assign offspring to each mating event
-      YOY.df <- createYOY.byPop(mothers2, fathers_by_population, ff, v)
-
-    } else if(popstructure == "panmictic"){
-
-      # Create dataframe of mating events, and then assign offspring to each mating event
-      YOY.df <- createYOY.panmictic(mothers2, fathers, ff, v)
-
-    }
     #Only bother assigning a sampling location for the years we're taking samples; otherwise just slows down code.
-    if(v >= min(sample.years)){
+    ## TO DO: ADD SAMPLE YEAR AND SITE INFORMATION THEN UNCOMMENT AND UPDATE BELOW
 
-      # YOY from the same mother are assigned to the same sampling location
-      YOY.df <- YOY.df %>% group_by(mother.x, population) %>%
-        mutate(
-          sampling_location = sample(
-            sampling.locations,
-            1,
-            prob = c(dispersal_kernel(age = 0, birth_population = population[1])),
-            replace = TRUE)
-        ) %>%
-        ungroup()
-
-      #Pull out mothers and assign them the same sampling location as their offspring from this year
-      mother.sample.df <- YOY.df %>% select(indv.name = mother.x, sampling_location) %>% distinct()
-
-      mothers.df <- mother.sample.df %>% lazy_dt() %>%
-        left_join(mothers, by = "indv.name") %>%
-        select(-num.mates) %>%
-        as_tibble()
-
-      #Assign all other individuals assigned randomly
-      loopy.pop <- data1 %>%
-        lazy_dt() %>%
-        filter(!indv.name %chin% YOY.df$mother.x) %>%
-        mutate(
-          sampling_location = map2_chr(
-            age.x,
-            population,
-            ~sample(
-              sampling.locations,
-              1,
-              prob = c(dispersal_kernel(.x, .y)),
-              replace = TRUE
-            ))
-        ) %>%
-        as_tibble() %>%
-        bind_rows(YOY.df, mothers.df)
-
-
-    } else {
-
-      # No need to assign sampling location if we're not sampling this year
-      loopy.pop <- bind_rows(data1, YOY.df)
-
-    }
+    # if(v >= min(sample_years)){
+    #
+    #   # YOY from the same mother are assigned to the same sampling location
+    #   YOY_df <- YOY_df %>% group_by(mother, population) %>%
+    #     mutate(
+    #       sampling_location = sample(
+    #         sampling_locations,
+    #         1,
+    #         prob = c(dispersal_kernel(age = 0, birth_population = population[1])),
+    #         replace = TRUE)
+    #     ) %>%
+    #     ungroup()
+    #
+    #   #Pull out mothers and assign them the same sampling location as their offspring from this year
+    #   mother_sample_df <- YOY_df %>% select(indv_name = mother, sampling_location) %>% distinct()
+    #
+    #   mothers_df <- mother_sample_df %>% lazy_dt() %>%
+    #     left_join(mothers, by = "indv_name") %>%
+    #     select(-num_mates) %>%
+    #     as_tibble()
+    #
+    #   #Assign all other individuals assigned randomly
+    #   loopy_pop <- data1 %>%
+    #     lazy_dt() %>%
+    #     filter(!indv_name %chin% YOY_df$mother) %>%
+    #     mutate(
+    #       sampling_location = map2_chr(
+    #         age,
+    #         population,
+    #         ~sample(
+    #           sampling_locations,
+    #           1,
+    #           prob = c(dispersal_kernel(.x, .y)),
+    #           replace = TRUE
+    #         ))
+    #     ) %>%
+    #     as_tibble() %>%
+    #     bind_rows(YOY_df, mothers_df)
+    #
+    #
+    # } else {
+    #
+    #   # No need to assign sampling location if we're not sampling this year
+       loopy_pop <- bind_rows(data1, YOY_df)
+    #
+    # }
 
     # Assign survival or mortality based on age-specific survival probabilities
-    loopy.pop <- loopy.pop %>% left_join(survival.df, by = "age.x") %>%
-      select(-c(stable.age)) %>%
-      rename(survival_rate = survival.rate) %>%
-      mutate(
-        survival = case_when(
-          age.x >= max.age ~ "M",
-          runif(nrow(loopy.pop)) <= survival_rate ~ "S",
-          .default = "M"
-        )
-      )
+    loopy_pop <- loopy_pop %>% left_join(survival_df, by = "age") %>%
+      mutate(survival = runif(n()) <= survival_rate)
 
     ###############################################`
     ####---------------Sampling----------------####
     ###############################################`
-    if(v %in% sample.years){
+    if(v %in% sample_years){
 
-      samples.df.temp <- loopy.pop %>%
+      samples_df_temp <- loopy_pop %>%
         group_by(sampling_location) %>%
-        group_map(~sample_fixed(.x, samples.vec[.y$sampling_location[1]]), .keep = TRUE) %>%
+        group_map(~sample_fixed(.x, samples_vec[.y$sampling_location[1]]), .keep = TRUE) %>%
         bind_rows() %>%
-        mutate(capture.year = v,
-               iteration = iter)
+        mutate(capture_year = v)
 
-      samples.df <- bind_rows(samples.df, samples.df.temp)
+      samples_df <- bind_rows(samples_df, samples_df_temp)
 
     }
 
@@ -410,61 +339,42 @@ simulate.pop <- function(input_data,
     ###############################################`
 
     # Calculate number of produced offspring per mother and father this year
-    moms.temp <- YOY.df %>% group_by(mother.x, population) %>%
-      summarize(num.off = n()) %>%
-      rename(parent = mother.x) %>%
-      mutate(year = v, parent.sex = "mother")
+    moms_temp <- YOY_df %>%
+      count(mother, population, name = "num_off") %>%
+      mutate(
+        indv_name = mother,
+        population,
+        num_off,
+        year = v,
+        which_parent = "mother",
+        .keep = "none"
+      )
 
-    dads.temp <- YOY.df %>% group_by(father.x, population) %>%
-      summarize(num.off = n()) %>%
-      rename(parent = father.x) %>%
-      mutate(year = v, parent.sex = "father")
-
-    mothers3 <- mothers2 %>% group_by(mother.x, population) %>%
-      summarize(num.off = n()) %>%
-      rename(parent = mother.x)
+    dads_temp <- YOY_df %>%
+      count(father, population, name = "num_off") %>%
+      mutate(
+        indv_name = father,
+        population,
+        num_off,
+        year = v,
+        which_parent = "father",
+        .keep = "none"
+      )
 
     # Add to the tibble of offspring distribution - can use to check if/whether some indvs are reproducing much more
     #   parents.tibble <- rbind(parents.tibble, moms.temp, dads.temp)
 
     # Print info about the population to the console
-    cat(paste("\nyear", v, " ", names(table(loopy.pop$population)),
-              "N_mothers=", table(moms.temp$population),
-              "N_fathers=", table(dads.temp$population),
-              "\nN_pups=", table(YOY.df$population),
-              "\nN_deaths=", table(loopy.pop$population[loopy.pop$survival=="M"]),
-              "\nTotal N= ", table(loopy.pop$population[loopy.pop$survival=="S"]) , sep=" "))
+    cat(paste("\nyear", v, " ", names(table(loopy_pop$population)),
+              "N_mothers=", table(moms_temp$population),
+              "N_fathers=", table(dads_temp$population),
+              "\nN_pups=", table(YOY_df$population),
+              "\nN_deaths=", table(loopy_pop$population[loopy_pop$survival==FALSE]),
+              "\nTotal N= ", table(loopy_pop$population[loopy_pop$survival==TRUE]) , sep=" "))
 
 
-    # Save the population size
-    pop.size.vec.MX <- cbind.data.frame(year=v,
-                                        population = "MX",
-                                        population_size=nrow(data1[data1$population == "MX",]),
-                                        Male.adult.pop = nrow(data1[data1$sex == "M" & data1$age.x >= repro.age & data1$population == "MX",]),
-                                        Female.adult.pop = nrow(data1[data1$sex == "F" & data1$age.x >= repro.age & data1$population == "MX",]),
-                                        Num.mothers = nrow(moms.temp[moms.temp$population == "MX",]),
-                                        Num.fathers = nrow(dads.temp[dads.temp$population == "MX",]),
-                                        iteration = iter)
-
-    pop.size.vec.ES <- cbind.data.frame(year=v,
-                                        population = "ES",
-                                        population_size=nrow(data1[data1$population == "ES",]),
-                                        Male.adult.pop = nrow(data1[data1$sex == "M" & data1$age.x >= repro.age & data1$population == "ES",]),
-                                        Female.adult.pop = nrow(data1[data1$sex == "F" & data1$age.x >= repro.age & data1$population == "ES",]),
-                                        Num.mothers = nrow(moms.temp[moms.temp$population == "ES",]),
-                                        Num.fathers = nrow(dads.temp[dads.temp$population == "ES",]),
-                                        iteration = iter)
-
-    pop.size.vec.EC <- cbind.data.frame(year=v,
-                                        population = "EC",
-                                        population_size=nrow(data1[data1$population == "EC",]),
-                                        Male.adult.pop = nrow(data1[data1$sex == "M" & data1$age.x >= repro.age & data1$population == "EC",]),
-                                        Female.adult.pop = nrow(data1[data1$sex == "F" & data1$age.x >= repro.age & data1$population == "EC",]),
-                                        Num.mothers = nrow(moms.temp[moms.temp$population == "EC",]),
-                                        Num.fathers = nrow(dads.temp[dads.temp$population == "EC",]),
-                                        iteration = iter)
-
-    pop.size <- bind_rows(pop.size, pop.size.vec.MX, pop.size.vec.ES, pop.size.vec.EC)
+    # Save the population size by age and sex
+    pop_size <- loopy_pop %>% dplyr::count(population, sex, age)
 
     # For checking that male maturity isn't changing over the simulation (this was a bug earlier) ...
     # plot.list[[v]] <- data1 %>% dplyr::filter(sex=='M') %>%
@@ -479,12 +389,10 @@ simulate.pop <- function(input_data,
     # When I figure out how to efficiently store this info for a large population, then I will uncomment this.
     #loopy.list[[v]] <- loopy.pop
 
-
-
   } # End loop over sim years
 
   # Label the list elements with the year
   # names(loopy.list) <- paste0("year.end.pop.", seq(1:(burn.in + Num.years)), "_iteration_", iter)
 
-  return(invisible(list(pop.size, samples.df)))
+  return(invisible(list(pop_size, samples_df)))
 }

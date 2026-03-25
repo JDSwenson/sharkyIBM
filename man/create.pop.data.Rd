@@ -10,7 +10,7 @@ create.pop.data(
   pop_number,
   pop_size,
   mating_periodicity,
-  f_maturity_age = NULL,
+  maturity_age = NULL,
   litter_size = NULL,
   YOY_survival = NULL,
   stable = TRUE,
@@ -32,7 +32,7 @@ be max_age + 1, including s0.}
 
 \item{mating_periodicity}{Integer. 1 = annual, 2 = biennial, etc.}
 
-\item{f_maturity_age}{Optional integer. Used to derive fecundity if F_by_age is NULL. We do not need maturity age of males for this.}
+\item{maturity_age}{Optional integer. Used to derive fecundity if F_by_age is NULL. We do not need maturity age of males for this.}
 
 \item{litter_size}{Optional numeric > 0. Mean pups per litter.}
 
