@@ -13,7 +13,7 @@
   female_fraction = 0.5,
   age_length_df = NULL,
   movement_array = NULL,
-  infertility = NULL,
+  infertility = 0,
   popstructure = "panmictic"
 )
 }

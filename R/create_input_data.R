@@ -28,109 +28,100 @@
 #' @examples
 #' input_pop <- create.pop.data(max_age = 10, survival = c(rep(0.8, times = 10)), pop_number = 3, pop_size = c(1000, 20000, 50000), mating_periodicity = 2, maturity_age = 5, litter_size = 7)
 #' input_pop
-create.pop.data <- function(max_age,
-                            survival,
-                            pop_number,
-                            pop_size,
-                            mating_periodicity,
-                            maturity_age = NULL,
-                            litter_size = NULL,
-                            YOY_survival = NULL,
-                            stable = TRUE,
-                            F_by_age = NULL,
-                            female_fraction = 0.5,
-                            age_length_df = NULL) {
+
+create.pop.data <- function(
+    max_age,
+    survival,
+    pop_number,
+    pop_size,
+    mating_periodicity,
+    maturity_age = NULL,
+    litter_size = NULL,
+    YOY_survival = NULL,
+    stable = TRUE,
+    F_by_age = NULL,
+    female_fraction = 0.5,
+    infertility = 0
+) {
 
   ## --------------------------- Input checks --------------------------- ##
   stopifnot(is.numeric(max_age), max_age >= 1)
   stopifnot(length(pop_size) == pop_number)
   stopifnot(all(pop_size >= 0))
+  stopifnot(infertility >= 0, infertility < 1)
 
   ## --------------------------- Survival input --------------------------- ##
-  if (stable == TRUE) {
+  if (stable) {
     stopifnot(length(survival) == max_age | length(survival) == 1)
-    if(length(survival) == 1){
-      survival <- c(rep(survival, times = max_age))
-    }
+    if (length(survival) == 1)
+      survival <- rep(survival, max_age)
+
     s1_to_smax <- as.numeric(survival)
     stopifnot(all(s1_to_smax > 0 & s1_to_smax <= 1))
+
   } else {
     stopifnot(length(survival) == max_age + 1 | length(survival) == 1)
-    if(length(survival) == 1){
-      survival <- c(YOY_survival, rep(survival, times = max_age))
-    }
+    if (length(survival) == 1)
+      survival <- c(YOY_survival, rep(survival, max_age))
     if (!is.null(YOY_survival)) survival[1] <- YOY_survival
-    stopifnot(all(survival > 0 & survival <= 1))
   }
 
   ## --------------------------- Fecundity --------------------------- ##
-  if (is.null(F_by_age) == TRUE) {
+  if (is.null(F_by_age)) {
     stopifnot(!is.null(maturity_age), !is.null(litter_size))
     stopifnot(maturity_age >= 0, maturity_age <= max_age)
     stopifnot(litter_size > 0)
 
     F_by_age <- numeric(max_age + 1)
 
-    # Ages are 0:max_age; indices 1:(max_age+1)
-    F_by_age[seq.int(from = maturity_age + 1L, to = max_age + 1L)] <-
+    # Annualized fecundity in breeding ages
+    F_by_age[(maturity_age + 1):(max_age + 1)] <-
       (litter_size * female_fraction) / mating_periodicity
-
-  } else {
-    stopifnot(length(F_by_age) == max_age + 1)
-    stopifnot(all(F_by_age >= 0))
   }
 
-  ## --------------------------- Solve for s0 if stable --------------------------- ##
-  if (stable == TRUE) {
+  ## --------------------------- Apply infertility --------------------------- ##
+  # Infertility permanently removes a fraction of females from reproduction
+  F_eff <- F_by_age * (1 - infertility)
+
+  ## --------------------------- Solve for s0 --------------------------- ##
+  if (stable) {
 
     if (max_age >= 2) {
-      prod_pre_a <- c(1, cumprod(s1_to_smax[1:(max_age - 1)]))
+      lx_no_s0 <- c(1, cumprod(s1_to_smax[1:(max_age - 1)]))
     } else {
-      prod_pre_a <- 1
+      lx_no_s0 <- 1
     }
 
-    # F_a for a = 1..max_age; indices 2:(max_age+1)
-    Fa_age1plus <- F_by_age[2:(max_age + 1)]
+    Fa <- F_eff[2:(max_age + 1)]
 
-    denom <- sum(prod_pre_a * Fa_age1plus)
+    denom <- sum(lx_no_s0 * Fa)
 
-    if (!is.finite(denom) || denom <= 0) {
-      stop("Degenerate fecundity/survival: Euler-Lotka denominator non-positive.")
-    }
+    if (!is.finite(denom) || denom <= 0)
+      stop("Euler–Lotka denominator non-positive")
 
     s0 <- 1 / denom
 
-    if (s0 <= 0 || s0 > 1) {
-      stop(sprintf(
-        "Unable to compute YOY survival within [0,1]. Implied s0 = %.4f.
-         Increase survival or fecundity, or set stable=FALSE.",
-        s0
-      ))
-    }
+    if (s0 <= 0 || s0 > 1)
+      stop(sprintf("Implied s0 = %.3f not in [0,1]", s0))
 
     survival_full <- c(s0, s1_to_smax)
 
   } else {
-
     survival_full <- as.numeric(survival)
   }
 
-  ## --------------------------- Enforce s[max_age] = 0 --------------------------- ##
-  survival_full[max_age + 1L] <- 0
-
-  ## --------------------------- Cumulative survivorship (l_x) --------------------------- ##
-  if (max_age >= 2) {
-    prod_pre_a_full <- c(1, cumprod(survival_full[2:max_age]))
-  } else {
-    prod_pre_a_full <- 1
-  }
-
-  l_vec <- c(1, survival_full[1] * prod_pre_a_full)
+  ## Enforce terminal mortality
+  survival_full[max_age + 1] <- 0
 
   ## --------------------------- Stable age distribution --------------------------- ##
-  w <- l_vec / sum(l_vec)
+  if (max_age >= 1) {
+    lx <- cumprod(c(1, survival_full[1:max_age]))
+  } else {
+    lx <- 1
+  }
 
-  ## Integer allocation helper
+  w <- lx / sum(lx)
+
   alloc_counts <- function(total, props) {
     raw <- total * props
     flo <- floor(raw)
@@ -142,27 +133,27 @@ create.pop.data <- function(max_age,
     as.integer(flo)
   }
 
-  ## --------------------------- Build N-at-age --------------------------- ##
   ages <- 0:max_age
-  out_list <- vector("list", pop_number)
+  out <- vector("list", pop_number)
 
   for (p in seq_len(pop_number)) {
     counts <- alloc_counts(pop_size[p], w)
-    out_list[[p]] <- data.frame(
+    out[[p]] <- data.frame(
       population = p,
       age = ages,
-      N = counts,
-      stringsAsFactors = FALSE
+      N = counts
     )
   }
 
-  numbers_at_age <- do.call(rbind, out_list)
+  numbers_at_age <- do.call(rbind, out)
+
 
   ## --------------------------- Return --------------------------- ##
   list(
     numbers_at_age = numbers_at_age,
-    survival = survival_full,     # includes computed s0 AND enforced s[max_age]=0
+    survival = survival_full,
     fecundity = F_by_age,
-    s0 = survival_full[1]
-    )
+    s0 = survival_full[1],
+    litter_size = litter_size
+  )
 }

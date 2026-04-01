@@ -16,7 +16,7 @@ create.pop.data(
   stable = TRUE,
   F_by_age = NULL,
   female_fraction = 0.5,
-  age_length_df = NULL
+  infertility = 0
 )
 }
 \arguments{
