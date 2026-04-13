@@ -6,35 +6,26 @@
 \usage{
 \method{simulate}{pop}(
   input_data,
-  mating_periodicity,
-  maturity_age,
   num_mates,
   num_years,
-  female_fraction = 0.5,
-  age_length_df = NULL,
   movement_array = NULL,
-  infertility = 0,
   popstructure = "panmictic"
 )
 }
 \arguments{
-\item{mating_periodicity}{Integer (>= 1). Female reproductive cycle periodicity (e.g., 1 = annual, 2 = biennial).}
-
 \item{num_mates}{Integer vector or scalar. Number of mates per mother (sampled with replacement).}
 
 \item{num_years}{Integer (>= 1). Number of analysis years after burn-in.}
 
-\item{age_length_df}{Data frame/tibble. Must contain at least \code{age.x}, \code{mean_length}, and \code{age_length_sd}.}
-
 \item{movement_array}{Three-dimensional array of age-based movement probabilities to locations where individual animals will be sampled. Dimensions should be [age, sampling_location, population]. In other words, each population should have its own matrix, ordered the same as the populations. The array should include age 0 individuals, so the number of rows should be max_age+1, and the movement probability for age a should be in the row a+1. For example, the probability to find age 6 individuals from population 1 at sampling location 4 would be specified in the movement_array [7, 4, 1].}
-
-\item{infertility}{Numeric in [0, 1] specifying the proportion of the population that is infertile throughout their lives. This characteristic is assigned at birth and stays with an individual throughout its life.}
 
 \item{init_pop_size}{Integer vector. Initial population size per population (order should match columns of \code{Nages}).}
 
 \item{init_prop_female}{Numeric scalar in [0, 1]. Initial proportion female in the population.}
 
 \item{Nages}{Integer matrix. Rows are ages, columns are populations; entries give counts used to build initial ages.}
+
+\item{mating_periodicity}{Integer (>= 1). Female reproductive cycle periodicity (e.g., 1 = annual, 2 = biennial).}
 
 \item{repro_age}{Integer (>= 0). Minimum female age for reproduction (knife-edged maturity).}
 
@@ -49,6 +40,10 @@
 \item{ff}{List or numeric. Fecundity-related parameters passed to offspring-generation helpers.}
 
 \item{burn_in}{Integer (>= 0). Number of initial years simulated before analysis years.}
+
+\item{age_length_df}{Data frame/tibble. Must contain at least \code{age.x}, \code{mean_length}, and \code{age_length_sd}.}
+
+\item{infertility}{Numeric in [0, 1] specifying the proportion of the population that is infertile throughout their lives. This characteristic is assigned at birth and stays with an individual throughout its life.}
 }
 \value{
 A list with two elements:

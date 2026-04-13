@@ -15,7 +15,16 @@
 #' @param maturity_age Optional integer. Used to derive fecundity if F_by_age is NULL. We do not need maturity age of males for this.
 #' @param litter_size Optional numeric > 0. Mean pups per litter.
 #' @param female_fraction Numeric in (0,1]. Default 0.5.
-#'
+#' @param growth_params Either a single dataframe or a list of length pop_number with each list element corresponding to a dataframe with growth parameters for the population. If a single dataframe is used, then the growth parameters will be applied to each population; if a list of length pop_number is defined, then population-specific growth parameters can be defined. Each dataframe must have two rows, which define the sex-specific vonBertalanffy growth parameters for the species/population. If defined, these parameters will be used to assign a growth rate to each individual in the simulation at birth based on random draws from a multivariate normal distribution. Thereafter, growth proceeds deterministically, governed by the assigned growth rate. This dataframe, which will be formatted and saved for the simulation, must have one row for males and one for females and contain the following named columns:
+#'   - L_inf: point estimate of L_inf (asymptotic maximum length)
+#'   - L_inf_sd: standard deviation of L_inf
+#'   - K: point estimate of K (growth coefficient)
+#'   - K_sd: standard deviation surrounding K
+#'   - t0: theoretical age at zero length
+#'   - rho: correlation coefficient between asymptotic length (L_inf) and growth rate (K), bounded between -1 and 1. A negative value for rho implies that individuals that grow fast (large K) tend to have smaller asymptotic maximum lengths (small L_inf), while individuals that grow slower (small K) have larger asymptotic maximum lengths (large L_inf). A positive value for rho implies that individuals that grow fast (large K) also tend to reach larger maximum lengths (large L_inf). A value of 0 implies no correlation.
+#'   - min_L0: minimum length-at-birth, in the same units as L_inf
+#'   - max_L0: maximum length-at-birth, in the same units as L_inf
+#'   - sex: to which sex do the parameters in this row apply? ("M" or "F")
 #' @returns A list containing:
 #'   - numbers_at_age: dataframe
 #'   - survival: full survival vector including age 0 and max age (which is set to 0)
@@ -41,7 +50,8 @@ create.pop.data <- function(
     stable = TRUE,
     F_by_age = NULL,
     female_fraction = 0.5,
-    infertility = 0
+    infertility = 0,
+    growth_params = NULL
 ) {
 
   ## --------------------------- Input checks --------------------------- ##
@@ -147,6 +157,31 @@ create.pop.data <- function(
 
   numbers_at_age <- do.call(rbind, out)
 
+  ## --------------------------- Age-length formatting --------------------------- ##
+  # Check that input requirements are met
+  if(class(growth_params) == "list"){
+    if(length(growth_params) != pop_number){
+
+      stop("growth_params must be a single dataframe or a list of length pop_number.")
+
+      } else if(length(growth_params) == pop_number){
+
+      growth_params_out <- growth_params
+
+      }
+  } else if(class(growth_params != "list")){
+    if(length(growth_params) != 1){
+
+      stop("growth_params must be a single dataframe or a list of length pop_number.")
+
+      } else if(length(growth_params) == 1){
+
+        # If a single dataframe is provided, copy the dataframe into a list of length pop_number
+        growth_params_out <- rep(list(
+          growth_params
+        ), times = length(pop_number))
+      }
+    }
 
   ## --------------------------- Return --------------------------- ##
   list(
@@ -154,6 +189,12 @@ create.pop.data <- function(
     survival = survival_full,
     fecundity = F_by_age,
     s0 = survival_full[1],
-    litter_size = litter_size
+    litter_size = litter_size,
+    growth_params = growth_params_out,
+    infertility = infertility,
+    mating_periodicity = mating_periodicity,
+    female_fraction = female_fraction,
+    maturity_age = maturity_age
+
   )
 }

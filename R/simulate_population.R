@@ -78,14 +78,9 @@
 #' @export
 
 simulate.pop <- function(input_data,
-                         mating_periodicity,
-                         maturity_age,
                          num_mates,
                          num_years,
-                         female_fraction = 0.5,
-                         age_length_df = NULL,
                          movement_array = NULL,
-                         infertility = 0,
                          popstructure = "panmictic" #panmictic or "structured"
                          ){
 
@@ -93,7 +88,20 @@ simulate.pop <- function(input_data,
   init_pop_size <- input_data$numbers_at_age
   max_age <- max(input_data$numbers_at_age$age)
   f <- max(input_data$fecundity)
-  litter_size = input_data$litter_size
+  litter_size <- input_data$litter_size
+
+  # Save growth parameters as a tibble and specify population as the corresponding list index
+  growth_params <- purrr::imap(
+    input_data$growth_params,
+    ~ dplyr::mutate(.x, population = .y)
+  ) %>%
+    purrr::list_rbind()
+
+  infertility <- input_data$infertility
+  mating_periodicity <- input_data$mating_periodicity
+  female_fraction <- input_data$female_fraction
+  maturity_age <- input_data$maturity_age
+
 #  YOY_survival <- input_data$s0
 #  juvenile_survival <- input_data$survival[2:(maturity_age)]
 #  adult_survival <- input_data$survival[maturity_age:(max_age-1)]
@@ -113,6 +121,11 @@ simulate.pop <- function(input_data,
     size = sum(init_pop_size$N),
     replace = T)
   init_fertile_vec <- runif(n = length(init_repro_cycle)) > infertility
+
+  # The simulation should run long enough to get rid of founders, so we just need placeholders for length.
+  # Here, we'll define length somewhat arbitrarily as L_inf/2
+  init_growth_params <- growth_params %>% dplyr::select(sex, population, L_inf, K) %>%
+    mutate(length = L_inf/2)
 
   # Summarize population numbers
   total_pop_sizes_df <- init_pop_size %>% group_by(population) %>%
@@ -159,7 +172,8 @@ simulate.pop <- function(input_data,
         NA_integer_
       ),
       fertile = init_fertile_vec
-    )
+    ) %>%
+    left_join(init_growth_params, by = c("sex", "population"))
 
   # TO DO: Add code to quickly and easily simulate initial starting lengths for all individuals from age_length_df (if supplied). Might want to just add to the tibble above, if can simulate in create_input_data.R script.
 # if(!is.null(age_length_df)){
@@ -262,7 +276,8 @@ simulate.pop <- function(input_data,
     data1 <- loopy_pop %>% left_join(survival_df, by = "age") %>%
       mutate(survival = runif(n()) <= survival_rate) %>%
       dplyr::filter(survival) %>%
-      mutate(age = age + 1) %>%
+      mutate(age = age + 1,
+             length = update.length.vb(length, L_inf, K)) %>%
       select(-c(survival_rate, survival))
     #If individuals are older than max_age, they will be killed after they reproduce
 

@@ -1,14 +1,7 @@
-# Add a function to create age_length_df
-# Ultimately, probably want to add this to the create_input_data.R function
-# Want the output from create_input_data to include a list element that corresponds to simulated lengths/ages
+# This script for now contains all helper functions that are called in simulate.pop
+# After all helper functions have been added here, then I will decide how to split them into different scripts as necessary.
 
-
-# Function to sample fathers
-# Function to randomly sample fathers from the same population as each mother when mating occurs
-# sample_fathers <- function(population, fathers_by_pop) {
-#   sample(fathers_by_pop[[population]], size = 1, replace = T)
-# }
-
+#---------------------------------- Create.YOY ----------------------------------
 # Function to create offspring from each mating event where individuals only mate within their population
 # CONFIRMED that when popstructure == "structured", mating only occurs within each population - March 25, 2026
 # Optimized run time - March 25, 2026
@@ -79,7 +72,6 @@ create.YOY <- function(mothers2, fathers, litters, year){
       seq_len(n)
     )
 
-
   YOY_df$age <- 0L
   YOY_df$birth_year <- year
 
@@ -88,6 +80,11 @@ create.YOY <- function(mothers2, fathers, litters, year){
     size = n,
     replace = TRUE,
     prob = c(female_fraction, 1 - female_fraction)
+  )
+
+  YOY_df <- assign.growth(
+    df = YOY_df,
+    growth_params = growth_params
   )
 
   YOY_df <- YOY_df %>% mutate(
@@ -100,7 +97,60 @@ create.YOY <- function(mothers2, fathers, litters, year){
       TRUE ~ NA),
     fertile = rbinom(n(), size = 1, prob = 1 - infertility) == 1
   ) %>%
-    dplyr::select(indv_name, sex, age, birth_year, population, repro_cycle, fertile, mother, father)
+    dplyr::select(indv_name, sex, age, birth_year, population, repro_cycle, fertile, mother, father, L_inf, K, length)
 
   return(YOY_df)
+}
+
+#---------------------------------- Assign growth at birth ----------------------------------
+assign.growth <- function(df, growth_params) {
+
+  df <- df %>%
+    dplyr::left_join(
+      growth_params,
+      by = c("population", "sex")
+    )
+
+  # MVN draw per individual
+  draws <- purrr::pmap_dfr(
+    list(df$L_inf, df$L_inf_sd,
+         df$K, df$K_sd,
+         df$rho),
+    function(mu_L, sd_L, mu_K, sd_K, rho) {
+
+      Sigma <- matrix(
+        c(sd_L^2,
+          rho * sd_L * sd_K,
+          rho * sd_L * sd_K,
+          sd_K^2),
+        nrow = 2, byrow = TRUE
+      )
+
+      x <- MASS::mvrnorm(1, mu = c(mu_L, mu_K), Sigma = Sigma)
+
+      tibble::tibble(
+        L_inf = x[1],
+        K     = x[2]
+      )
+    }
+  )
+
+
+  df <- df %>%
+    dplyr::select(indv_name, population, mother, father, age, birth_year, sex, min_L0, max_L0) %>%
+    dplyr::bind_cols(draws) %>%
+    dplyr::mutate(
+      length = runif(n(), min_L0, max_L0)
+      ) %>%
+    dplyr::select(
+      -c(min_L0, max_L0)
+    )
+
+  return(df)
+}
+
+
+#---------------------------------- Update length ----------------------------------
+update.length.vb <- function(length, L_inf, K) {
+  L_inf - (L_inf - length) * exp(-K)
 }
