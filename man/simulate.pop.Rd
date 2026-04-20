@@ -9,41 +9,28 @@
   num_mates,
   num_years,
   movement_array = NULL,
-  popstructure = "panmictic"
+  popstructure = "panmictic",
+  stickiness = NULL,
+  superpod_size = NULL,
+  male_behavior = "mischievous",
+  sampling = "random",
+  sample_size = NULL
 )
 }
 \arguments{
+\item{input_data}{List of input parameters and settings, created via the create.pop.data() function}
+
 \item{num_mates}{Integer vector or scalar. Number of mates per mother (sampled with replacement).}
 
 \item{num_years}{Integer (>= 1). Number of analysis years after burn-in.}
 
 \item{movement_array}{Three-dimensional array of age-based movement probabilities to locations where individual animals will be sampled. Dimensions should be [age, sampling_location, population]. In other words, each population should have its own matrix, ordered the same as the populations. The array should include age 0 individuals, so the number of rows should be max_age+1, and the movement probability for age a should be in the row a+1. For example, the probability to find age 6 individuals from population 1 at sampling location 4 would be specified in the movement_array [7, 4, 1].}
 
-\item{init_pop_size}{Integer vector. Initial population size per population (order should match columns of \code{Nages}).}
+\item{popstructure}{A character value, specified as either "panmictic" (default) or "structured". "panmictic" means that all individuals across all populations will freely mate with one another; "structured" means that individuals will only mate within their population.}
 
-\item{init_prop_female}{Numeric scalar in [0, 1]. Initial proportion female in the population.}
+\item{stickiness}{Double, between 0 and 1. Specifies the degree of "stickiness" among familial groups. A value of 1 means that each pod will be composed entirely of family members; a value of 0 results in no family-level "pods". If this parameter is defined, then the "superpod_size" parameter must be set as well.}
 
-\item{Nages}{Integer matrix. Rows are ages, columns are populations; entries give counts used to build initial ages.}
-
-\item{mating_periodicity}{Integer (>= 1). Female reproductive cycle periodicity (e.g., 1 = annual, 2 = biennial).}
-
-\item{repro_age}{Integer (>= 0). Minimum female age for reproduction (knife-edged maturity).}
-
-\item{YOY_survival}{Numeric in [0, 1]. Survival parameter for young-of-year (if not overridden by a survival table).}
-
-\item{juvenile_survival}{Numeric in [0, 1]. Survival parameter for juveniles (if not overridden).}
-
-\item{adult_survival}{Numeric in [0, 1]. Survival parameter for adults (if not overridden).}
-
-\item{max_age}{Integer (>= 0). Individuals at or above this age are removed (die of senescence).}
-
-\item{ff}{List or numeric. Fecundity-related parameters passed to offspring-generation helpers.}
-
-\item{burn_in}{Integer (>= 0). Number of initial years simulated before analysis years.}
-
-\item{age_length_df}{Data frame/tibble. Must contain at least \code{age.x}, \code{mean_length}, and \code{age_length_sd}.}
-
-\item{infertility}{Numeric in [0, 1] specifying the proportion of the population that is infertile throughout their lives. This characteristic is assigned at birth and stays with an individual throughout its life.}
+\item{superpod_size}{Integer. How many pods will be combined into a superpod? We do not require this parameter to be a multiple of the number of pods, so in most cases there will be one superpod that combines fewer pods than defined here.}
 }
 \value{
 A list with two elements:

@@ -62,8 +62,16 @@ create.YOY <- function(mothers2, fathers, litters, year){
   # How many instances of mating?
   n <- nrow(mating_events)
 
-  # Add indv_name, age, sex, repro_cycle, etc. to dataframe of mating instances
-  YOY_df <- mating_events %>% dplyr::select(population, mother, father)
+  if(!is.null(stickiness)){
+
+    # Add indv_name, age, sex, repro_cycle, etc. to dataframe of mating instances
+    YOY_df <- mating_events %>% dplyr::select(population, pod, mother, father)
+
+    } else{
+
+      YOY_df <- mating_events %>% dplyr::select(population, mother, father)
+
+      }
 
   YOY_df$indv_name <-
     indv_name <- sprintf(
@@ -96,8 +104,20 @@ create.YOY <- function(mothers2, fathers, litters, year){
       ),
       TRUE ~ NA),
     fertile = rbinom(n(), size = 1, prob = 1 - infertility) == 1
-  ) %>%
-    dplyr::select(indv_name, sex, age, birth_year, population, repro_cycle, fertile, mother, father, L_inf, K, length)
+  )
+
+  # Account for pod structure
+  if(!is.null(stickiness)){
+
+    YOY_df <- YOY_df %>%
+      dplyr::select(indv_name, sex, age, birth_year, population, pod, repro_cycle, fertile, mother, father, L_inf, K, length)
+
+  } else {
+
+    YOY_df <- YOY_df %>%
+      dplyr::select(indv_name, sex, age, birth_year, population, repro_cycle, fertile, mother, father, L_inf, K, length)
+
+    }
 
   return(YOY_df)
 }
@@ -137,7 +157,8 @@ assign.growth <- function(df, growth_params) {
 
 
   df <- df %>%
-    dplyr::select(indv_name, population, mother, father, age, birth_year, sex, min_L0, max_L0) %>%
+#    dplyr::select(indv_name, population, mother, father, age, birth_year, sex, min_L0, max_L0) %>%
+    dplyr::select(-c(L_inf, L_inf_sd, K, K_sd, t0, rho)) %>%
     dplyr::bind_cols(draws) %>%
     dplyr::mutate(
       length = runif(n(), min_L0, max_L0)
