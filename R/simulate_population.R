@@ -10,7 +10,9 @@
 #' @param num_years Integer (>= 1). Number of analysis years after burn-in.
 #' @param movement_array Three-dimensional array of age-based movement probabilities to locations where individual animals will be sampled. Dimensions should be \[age, sampling_location, population\]. In other words, each population should have its own matrix, ordered the same as the populations. The array should include age 0 individuals, so the number of rows should be max_age+1, and the movement probability for age a should be in the row a+1. For example, the probability to find age 6 individuals from population 1 at sampling location 4 would be specified in the movement_array \[7, 4, 1\].
 #' @param popstructure A character value, specified as either "panmictic" (default) or "structured". "panmictic" means that all individuals across all populations will freely mate with one another; "structured" means that individuals will only mate within their population.
-#' @param stickiness Double, between 0 and 1. Specifies the degree of "stickiness" among familial groups. A value of 1 means that each pod will be composed entirely of family members; a value of 0 results in no family-level "pods". If this parameter is defined, then the "superpod_size" parameter must be set as well.
+#' @param stickiness Double, between 0 and 1. Specifies the degree of "stickiness" among familial groups. A value of 1 means that each mother-centric family group will remain together as a pod throughout their lives; a value of 0 means that pods will be randomly shuffled each year composed of random individuals.  If this parameter is defined, then the "superpod_size" parameter must be set as well.
+#' @param sticky_age Integer. This is the age at which the stickiness parameter will be applied. Prior to this age, individuals will remain in the same pod they were born into. Setting sticky_age = max_age will mean that individuals will remain in the same pod they're born into throughout their lives, similar to stickiness = 1.
+#' @param sticky_interval Integer. If 0 < stickiness < 1, this is the number of years individuals will shuffle among pods according to the probability defined in the stickiness parameter e.g., if stickiness = 0 and sticky_interval = 2, then every 2 years, each individual above sticky_age will change pods.
 #' @param superpod_size Integer. How many pods will be combined into a superpod? We do not require this parameter to be a multiple of the number of pods, so in most cases there will be one superpod that combines fewer pods than defined here.
 #'
 #' @details
@@ -74,10 +76,13 @@ simulate.pop <- function(input_data,
                          movement_array = NULL,
                          popstructure = "panmictic", #panmictic or "structured"
                          stickiness = NULL,
+                         sticky_age = NULL,
+                         sticky_interval = NULL,
                          superpod_size = NULL,
-                         male_behavior = "mischievous", # "mischievous", "family-oriented", or "strong_bull"
-                         sampling = "random", # "random" or "pod"
-                         sample_size = NULL
+                         male_behavior = NULL, # "mischievous", "family-oriented", or "strong_bull"
+                         sampling = "random", # "random" or "superpod"
+                         sample_size = NULL,
+                         process_by = "age" # age or length
                          ){
 
   # Save initial values as distinct R objects
@@ -174,7 +179,7 @@ simulate.pop <- function(input_data,
   # Add pods if including pod structure
   if(!is.null(stickiness)){
 
-    # Assign pod as a random number between 1 and n_females
+    # Assign pod as a random number between 1 and n_females -- init males will be assigned a pod after they mate with females
     init_pop <- init_pop %>%
       group_by(sex) %>%
       mutate(
@@ -238,7 +243,7 @@ simulate.pop <- function(input_data,
   #   rename(mother = indv_name) %>%
   #   as_tibble()
 
-  # Add pods if including pod structure
+  # Keep pods in mothers dataframe if including pod structure
   if(!is.null(stickiness)){
 
   mothers2 <- mothers %>%
@@ -270,14 +275,14 @@ simulate.pop <- function(input_data,
     # Create dataframe of mating events and generate initial offspring from each mating event
     YOY_df <- create.YOY(mothers2, fathers, litters, year = 0)
 
-    # Add superpods for fathers if including pod structure
+    # Add superpods for fathers if including pod structure (regular pod doesn't matter)
     if(!is.null(stickiness)){
 
       pods_vec <- YOY_df %>% pull(pod)
 
       # Assign each father to one of the pods of the females he mated with
       pod_fathers <- YOY_df %>% distinct(father, .keep_all = T) %>%
-        select(indv_name = father, father_pod = pod)
+        select(indv_name = father, father_pod = pod) # could change to slice_sample if we want to make the pod totally random, but I don't think it matters
 
       # Join dataframe of fathers with assigned pod to init_pop
       init_pop <- init_pop %>% left_join(pod_fathers, by = "indv_name") %>%
@@ -287,7 +292,7 @@ simulate.pop <- function(input_data,
           pod
         )) %>%
         select(-father_pod) %>%
-        mutate(pod = ifelse(
+        mutate(pod = ifelse( # Juvenile founding males do not have a pod yet, so we'll assign one here.
           is.na(pod) == T,
           sample(pods_vec, size = n(), replace = T),
           pod
@@ -298,7 +303,7 @@ simulate.pop <- function(input_data,
   # This dataframe holds the population at the end of the first year of the simulation
   year_end_pop_0 <- bind_rows(init_pop, YOY_df)
 
-  # Create superpods
+  # Create superpods -- number of pods in each superpod is specified via superpod_size
   if(!is.null(stickiness)){
 
     pods <- year_end_pop_0 %>%
@@ -311,8 +316,32 @@ simulate.pop <- function(input_data,
       )
 
     loopy_pop <- year_end_pop_0 %>%
-      left_join(pods, by = "pod")
+      left_join(pods, by = "pod") %>%
+      mutate(pod_year = 0)
 
+    if(male_behavior == "strong_bull"){
+
+      if(process_by == "age"){
+
+        # Randomly pick one father for each superpod
+        bulls <- data1 %>% dplyr::filter(sex=='M',
+                                           age >= maturity_age) %>%
+          group_by(superpod) %>%
+          slice_sample(n = 1) %>%
+          ungroup() %>%
+          select(indv_name, population, pod, superpod)
+
+      }else if(process_by == "length"){
+
+        bulls <- data1 %>% dplyr::filter(sex=='M',
+                                         age >= maturity_age) %>%
+          group_by(superpod) %>%
+          slice_max(length, n = 1, with_ties = FALSE) %>%
+          ungroup() %>%
+          select(indv_name, population, pod, superpod)
+
+      }
+    }
   } else {
 
     loopy_pop <- year_end_pop_0
@@ -321,7 +350,6 @@ simulate.pop <- function(input_data,
 
   # At the end of year 0 ...
   message(paste("year 0, Population ", names(table(loopy_pop$population)), ": N_mothers=", table(mothers2$population), ", N_pups=", table(YOY_df$population), ", Total N=", table(loopy_pop$population) , sep=""))
-
 
   #############################################################`
   ####---------Loop through remaining simulation years-----####
@@ -347,6 +375,32 @@ simulate.pop <- function(input_data,
              length = update.length.vb(length, L_inf, K)) %>%
       select(-c(survival_rate, survival))
     #If individuals are older than max_age, they will be killed after they reproduce
+
+    if(!is.null(stickiness)){
+
+      # Index superpods so that we can ensure that all pods stay in the same superpod
+      superpod_index <- data1 %>% distinct(pod, superpod)
+
+      # Make separate dataframe of individuals that need to (potentially) change pods
+      temp_pod_df <- data1 %>% filter(age >= sticky_age,
+                                      v - pod_year == sticky_interval) %>%
+        mutate(
+          change_pod = runif(n()) > stickiness
+        ) %>%
+        select(-superpod) %>%
+        mutate(pod = ifelse(
+          change_pod == T,
+          sample(superpod_index$pod, replace = T),
+          pod
+        )) %>%
+        left_join(superpod_index, by = "pod")
+
+
+      data1 <- data1 %>% filter(age < sticky_age |
+                       v - pod_year != sticky_interval) %>%
+        bind_rows(temp_pod_df)
+
+    }
 
     ####----------Breeding----------####
     #------------Mothers------------#
@@ -392,13 +446,102 @@ simulate.pop <- function(input_data,
         litter_size = 1 + rpois(n(), lambda = litter_size - 1)
       )
 
-    ## PICK UP HERE AFTER APRIL 20
+    if(!is.null(male_behavior)){
 
-    #------------Fathers------------#
-    fathers <- data1 %>% dplyr::filter(sex=='M',
-                                       age >= maturity_age
-    ) %>% # Uncomment for age-based maturity
-      select(indv_name, population)
+      if(male_behavior == "mischievous"){
+
+        # Same as default behavior
+        fathers <- data1 %>% dplyr::filter(sex=='M',
+                                           age >= maturity_age) %>%
+          select(indv_name, population, pod, superpod)
+
+    } else if(male_behavior == "family_oriented"){
+      # Same as default behavior
+      fathers <- data1 %>% dplyr::filter(sex=='M',
+                                         age >= maturity_age) %>%
+        select(indv_name, population, pod, superpod)
+
+    } else if(male_behavior == "strong_bull"){
+
+      # which bulls are still alive?
+      living_bulls <- bulls[bulls$indv_name %in% data1$indv_name,]
+
+      if(process_by == "age"){
+
+        # Randomly pick one bull per superpod IF there isn't already a living bull for that superpod
+        bulls <- data1 %>% dplyr::filter(sex=='M',
+                                         age >= maturity_age,
+                                         !superpod %in% living_bulls$superpod) %>%
+          group_by(superpod) %>%
+          slice_sample(n = 1) %>%
+          ungroup() %>%
+          #        distinct(superpod, .keep_all = T) %>%
+          select(indv_name, population, pod, superpod) %>%
+          bind_rows(living_bulls)
+
+        # Just one father for each superpod
+        fathers <- bulls
+
+      } else if(process_by == "length"){
+
+        bulls <- data1 %>% dplyr::filter(sex=='M',
+                                         age >= maturity_age,
+                                         !superpod %in% living_bulls$superpod) %>%
+          group_by(superpod) %>%
+          slice_max(length, n = 1, with_ties = FALSE) %>%
+          ungroup() %>%
+          select(indv_name, population, pod, superpod)
+
+        # Just one father for each superpod
+        fathers <- bulls
+
+      }
+      }
+      } else {
+      fathers <- data1 %>% dplyr::filter(sex=='M',
+                                         age >= maturity_age) %>%
+        select(indv_name, population)
+
+      }
+
+    # Confirm that each superpod has at least one mature male and one mature female
+    if(!is.null(stickiness)){
+
+      missing_superpods <- setdiff(
+        union(fathers$superpod, mothers$superpod),
+        intersect(fathers$superpod, mothers$superpod)
+      )
+
+      if(length(missing_superpods) > 0){
+
+        # For now, assume each superpod will have at least one reproductive female.
+        # May need to replicate below for mothers if this assumption isn't true.
+        if(sum(fathers$superpod %in% missing_superpods) > 0){
+
+          # which superpods are missing from fathers?
+          missing_from_fathers <- missing_superpods[which(!missing_superpods %in% fathers$superpod)]
+          new_pods <- superpod_index %>% filter(superpod %in% missing_from_fathers) %>%
+            slice_sample(n = length(missing_from_fathers))
+
+          # Identify superpods with enough mature males to move one around
+          movable_fathers <- fathers %>% count(superpod) %>% filter(n > length(missing_from_fathers))
+
+          fathers_to_move <- fathers %>%
+            filter(superpod %in% movable_fathers$superpod) %>%
+            slice_sample(n = length(missing_from_fathers)) %>%
+            mutate(new_superpod = new_pods$superpod,
+                   new_pod = new_pods$pod) %>%
+            mutate(
+              superpod = coalesce(new_superpod, superpod),
+              pod = coalesce(new_pod, pod)
+            ) %>%
+            select(-new_superpod)
+
+          fathers_reduced <- fathers %>% filter(!indv_name %in% fathers_to_move$indv_name)
+
+          fathers <- bind_rows(fathers_reduced, fathers_to_move)
+
+      }
 
     # Create dataframe of mating events and generate initial offspring from each mating event
     YOY_df <- create.YOY(mothers2, fathers, litters, year = v)

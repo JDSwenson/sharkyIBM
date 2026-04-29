@@ -42,7 +42,7 @@ create.YOY <- function(mothers2, fathers, litters, year){
 
   # The dataframe mating_events has one row per YOY, with mother, father, and population in the correct(ly labeled) columns, so we can use this dataframe as the foundation of YOY_df.
   # TO DO: Can I adjust the below function so that no mating events produce zero offspring?
-  mating_events <- mothers2 %>%
+  mating_events_temp <- mothers2 %>%
     left_join(litters, by = c("mother", "population")) %>%
     group_by(mother) %>%
     mutate(
@@ -53,10 +53,28 @@ create.YOY <- function(mothers2, fathers, litters, year){
       )[,1]
     ) %>%
     ungroup() %>%
-    filter(litter_per_mating > 0) %>%
-    mutate(father = sample(fathers$indv_name, size = n(), replace = TRUE)) %>%
-    tidyr::uncount(litter_per_mating)
+    filter(litter_per_mating > 0)
 
+  if(!is.null(male_behavior)){
+
+    if(male_behavior == "mischievous"){
+
+      mating_events <- mating_events_temp %>%
+        group_by(superpod) %>%
+        mutate(
+          father = sample(
+            fathers$indv_name[fathers$superpod == first(superpod)],
+            size = n(),
+            replace = TRUE
+          )
+        ) %>%
+        ungroup()
+
+        tidyr::uncount(litter_per_mating)
+
+        # PICK UP HERE ON APRIL 30
+
+      }
 }
 
   # How many instances of mating?
