@@ -82,6 +82,7 @@ simulate.pop <- function(input_data,
                          male_behavior = NULL, # "mischievous", "family-oriented", or "strong_bull"
                          sampling = "random", # "random" or "superpod"
                          sample_size = NULL,
+                         sample_years = NULL,
                          process_by = "age" # age or length
                          ){
 
@@ -90,6 +91,7 @@ simulate.pop <- function(input_data,
   max_age <- max(input_data$numbers_at_age$age)
   f <- max(input_data$fecundity)
   litter_size <- input_data$litter_size
+  s_years <- c(((num_years - sample_years)+1): num_years) # which years will be sampled?
 
   # Save growth parameters as a tibble and specify population as the corresponding list index
   growth_params <- purrr::imap(
@@ -125,8 +127,10 @@ simulate.pop <- function(input_data,
 
   # The simulation should run long enough to get rid of founders, so we just need placeholders for length.
   # Here, we'll define length somewhat arbitrarily as L_inf/2
+  if(process_by == "length"){
   init_growth_params <- growth_params %>% dplyr::select(sex, population, L_inf, K) %>%
     mutate(length = L_inf/2)
+}
 
   # Summarize population numbers
   total_pop_sizes_df <- init_pop_size %>% group_by(population) %>%
@@ -173,8 +177,14 @@ simulate.pop <- function(input_data,
         NA_integer_
       ),
       fertile = init_fertile_vec
-    ) %>%
+    )
+
+  if(process_by == "length"){
+
+  init_pop <- init_pop %>%
     left_join(init_growth_params, by = c("sex", "population"))
+
+  }
 
   # Add pods if including pod structure
   if(!is.null(stickiness)){
@@ -273,9 +283,9 @@ simulate.pop <- function(input_data,
     select(indv_name, population)
 
     # Create dataframe of mating events and generate initial offspring from each mating event
-    YOY_df <- create.YOY(mothers2, fathers, litters, year = 0)
+    YOY_df <- create.YOY.init(mothers2, fathers, litters, process_by = process_by)
 
-    # Add superpods for fathers if including pod structure (regular pod doesn't matter)
+    # Add pods for fathers if including pod structure
     if(!is.null(stickiness)){
 
       pods_vec <- YOY_df %>% pull(pod)
@@ -319,6 +329,7 @@ simulate.pop <- function(input_data,
       left_join(pods, by = "pod") %>%
       mutate(pod_year = 0)
 
+    # If male_behavior %in% c("mischievous", "family_oriented"), then we do not need to do anything special to assign superpods for now
     if(male_behavior == "strong_bull"){
 
       if(process_by == "age"){
@@ -371,11 +382,15 @@ simulate.pop <- function(input_data,
     data1 <- loopy_pop %>% left_join(survival_df, by = "age") %>%
       mutate(survival = runif(n()) <= survival_rate) %>%
       dplyr::filter(survival) %>%
-      mutate(age = age + 1,
-             length = update.length.vb(length, L_inf, K)) %>%
       select(-c(survival_rate, survival))
     #If individuals are older than max_age, they will be killed after they reproduce
 
+    if(process_by == "length"){
+
+      data1 <- data1 %>% mutate(age = age + 1,
+             length = update.length.vb(length, L_inf, K))
+
+      }
     if(!is.null(stickiness)){
 
       # Index superpods so that we can ensure that all pods stay in the same superpod
@@ -507,16 +522,15 @@ simulate.pop <- function(input_data,
     # Confirm that each superpod has at least one mature male and one mature female
     if(!is.null(stickiness)){
 
+      ### PICK UP HERE AFTER MAY 1:
+
       missing_superpods <- setdiff(
         union(fathers$superpod, mothers$superpod),
         intersect(fathers$superpod, mothers$superpod)
       )
 
-      if(length(missing_superpods) > 0){
-
         # For now, assume each superpod will have at least one reproductive female.
         # May need to replicate below for mothers if this assumption isn't true.
-        if(sum(fathers$superpod %in% missing_superpods) > 0){
 
           # which superpods are missing from fathers?
           missing_from_fathers <- missing_superpods[which(!missing_superpods %in% fathers$superpod)]
@@ -541,10 +555,9 @@ simulate.pop <- function(input_data,
 
           fathers <- bind_rows(fathers_reduced, fathers_to_move)
 
-      }
-
+}
     # Create dataframe of mating events and generate initial offspring from each mating event
-    YOY_df <- create.YOY(mothers2, fathers, litters, year = v)
+    YOY_df <- create.YOY(mothers2, fathers, litters, year = v, process_by = process_by)
 
     #Only bother assigning a sampling location for the years we're taking samples; otherwise just slows down code.
     ## TO DO: ADD SAMPLE YEAR AND SITE INFORMATION THEN UNCOMMENT AND UPDATE BELOW
@@ -599,17 +612,50 @@ simulate.pop <- function(input_data,
     ###############################################`
     ####---------------Sampling----------------####
     ###############################################`
-    # if(v %in% sample_years){
-    #
-    #   samples_df_temp <- loopy_pop %>%
-    #     group_by(sampling_location) %>%
-    #     group_map(~sample_fixed(.x, samples_vec[.y$sampling_location[1]]), .keep = TRUE) %>%
-    #     bind_rows() %>%
-    #     mutate(capture_year = v)
-    #
-    #   samples_df <- bind_rows(samples_df, samples_df_temp)
-    #
-    # }
+    if(v %in% s_years){
+
+      if(sampling == "random"){
+
+        samples_df_temp <- loopy_pop %>%
+          slice_sample(n = sample_size) %>%
+          mutate(capture_year = v)
+
+
+      } else if(sampling == "superpod"){
+
+        # Step 1: choose superpods
+        chosen_pods <- loopy_pop %>%
+          distinct(superpod) %>%
+          slice_sample(n = length(sample_size)) %>%
+          mutate(n_to_sample = sample_size)
+
+        # Step 2: sample within each superpod
+        samples_df_pod <- loopy_pop %>%
+          inner_join(chosen_pods, by = "superpod")
+
+
+        # Split data by superpod (only chosen ones are present)
+        pod_list <- split(samples_df_pod, samples_df_pod$superpod)
+
+        # Named vector of sample sizes (superpod → n)
+        n_vec <- chosen_pods$n_to_sample
+        names(n_vec) <- chosen_pods$superpod
+
+        # Sample within each superpod
+        sampled_list <- Map(
+          function(df, n) df[sample.int(nrow(df), n), ],
+          pod_list,
+          n_vec
+        )
+
+        # Recombine into a single data frame
+        samples_df_temp <- dplyr::bind_rows(sampled_list)
+
+      }
+
+      samples_df <- bind_rows(samples_df, samples_df_temp)
+
+    } # End sampling
 
 
     ###############################################`
@@ -617,27 +663,27 @@ simulate.pop <- function(input_data,
     ###############################################`
 
     # Calculate number of produced offspring per mother and father this year
-    moms_temp <- YOY_df %>%
-      count(mother, population, name = "num_off") %>%
-      mutate(
-        indv_name = mother,
-        population,
-        num_off,
-        year = v,
-        which_parent = "mother",
-        .keep = "none"
-      )
-
-    dads_temp <- YOY_df %>%
-      count(father, population, name = "num_off") %>%
-      mutate(
-        indv_name = father,
-        population,
-        num_off,
-        year = v,
-        which_parent = "father",
-        .keep = "none"
-      )
+    # moms_temp <- YOY_df %>%
+    #   count(mother, population, name = "num_off") %>%
+    #   mutate(
+    #     indv_name = mother,
+    #     population,
+    #     num_off,
+    #     year = v,
+    #     which_parent = "mother",
+    #     .keep = "none"
+    #   )
+    #
+    # dads_temp <- YOY_df %>%
+    #   count(father, population, name = "num_off") %>%
+    #   mutate(
+    #     indv_name = father,
+    #     population,
+    #     num_off,
+    #     year = v,
+    #     which_parent = "father",
+    #     .keep = "none"
+    #   )
 
     # Add to the tibble of offspring distribution - can use to check if/whether some indvs are reproducing much more
     #   parents.tibble <- rbind(parents.tibble, moms.temp, dads.temp)
@@ -671,4 +717,4 @@ simulate.pop <- function(input_data,
   # names(loopy.list) <- paste0("year.end.pop.", seq(1:(burn.in + Num.years)), "_iteration_", iter)
 
   return(invisible(list(pop_size, samples_df)))
-}
+    }

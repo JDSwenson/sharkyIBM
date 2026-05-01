@@ -11,10 +11,14 @@
   movement_array = NULL,
   popstructure = "panmictic",
   stickiness = NULL,
+  sticky_age = NULL,
+  sticky_interval = NULL,
   superpod_size = NULL,
-  male_behavior = "mischievous",
+  male_behavior = NULL,
   sampling = "random",
-  sample_size = NULL
+  sample_size = NULL,
+  sample_years = NULL,
+  process_by = "age"
 )
 }
 \arguments{
@@ -28,7 +32,11 @@
 
 \item{popstructure}{A character value, specified as either "panmictic" (default) or "structured". "panmictic" means that all individuals across all populations will freely mate with one another; "structured" means that individuals will only mate within their population.}
 
-\item{stickiness}{Double, between 0 and 1. Specifies the degree of "stickiness" among familial groups. A value of 1 means that each pod will be composed entirely of family members; a value of 0 results in no family-level "pods". If this parameter is defined, then the "superpod_size" parameter must be set as well.}
+\item{stickiness}{Double, between 0 and 1. Specifies the degree of "stickiness" among familial groups. A value of 1 means that each mother-centric family group will remain together as a pod throughout their lives; a value of 0 means that pods will be randomly shuffled each year composed of random individuals.  If this parameter is defined, then the "superpod_size" parameter must be set as well.}
+
+\item{sticky_age}{Integer. This is the age at which the stickiness parameter will be applied. Prior to this age, individuals will remain in the same pod they were born into. Setting sticky_age = max_age will mean that individuals will remain in the same pod they're born into throughout their lives, similar to stickiness = 1.}
+
+\item{sticky_interval}{Integer. If 0 < stickiness < 1, this is the number of years individuals will shuffle among pods according to the probability defined in the stickiness parameter e.g., if stickiness = 0 and sticky_interval = 2, then every 2 years, each individual above sticky_age will change pods.}
 
 \item{superpod_size}{Integer. How many pods will be combined into a superpod? We do not require this parameter to be a multiple of the number of pods, so in most cases there will be one superpod that combines fewer pods than defined here.}
 }

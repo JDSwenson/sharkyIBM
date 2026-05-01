@@ -159,6 +159,7 @@ create.pop.data <- function(
 
   ## --------------------------- Age-length formatting --------------------------- ##
   # Check that input requirements are met
+  if(!is.null(growth_params)){
   if(class(growth_params) == "list"){
     if(length(growth_params) != pop_number){
 
@@ -182,8 +183,9 @@ create.pop.data <- function(
         ), times = length(pop_number))
       }
     }
-
+  }
   ## --------------------------- Return --------------------------- ##
+  if(!is.null(growth_params)){
   list(
     numbers_at_age = numbers_at_age,
     survival = survival_full,
@@ -195,6 +197,20 @@ create.pop.data <- function(
     mating_periodicity = mating_periodicity,
     female_fraction = female_fraction,
     maturity_age = maturity_age
-
   )
+  } else{
+
+    list(
+      numbers_at_age = numbers_at_age,
+      survival = survival_full,
+      fecundity = F_by_age,
+      s0 = survival_full[1],
+      litter_size = litter_size,
+      infertility = infertility,
+      mating_periodicity = mating_periodicity,
+      female_fraction = female_fraction,
+      maturity_age = maturity_age
+    )
+
+  }
 }
