@@ -70,6 +70,9 @@ A list containing:
 Currently, create.pop.data takes a single vector of survival and a single vector of fecundity, which are applied to all populations. Future updates will allow for population-specific survival and fecundity.
 }
 \description{
+Let's forget about this function for now (June 2026) and assume that all info is input to calculate_s0 and simulate_population
+}
+\details{
 Format and prepare input data for individual-based population simulation from user-defined input values.
 }
 \examples{

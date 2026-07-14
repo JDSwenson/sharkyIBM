@@ -120,12 +120,12 @@ create.YOY.init <- function(mothers2, fathers, litters, year = 0, process_by = "
     if(process_by == "length"){
     YOY_df <- YOY_df %>%
       dplyr::select(indv_name, sex, age, birth_year, population, pod, repro_cycle, fertile, mother, father, L_inf, K, length)
-    }
     } else if(process_by == "age"){
       YOY_df <- YOY_df %>%
         dplyr::select(indv_name, sex, age, birth_year, population, pod, repro_cycle, fertile, mother, father)
-} else{ # if stickiness is off
-  if(process_by == "length"){
+}
+    } else{ # if stickiness is off
+      if(process_by == "length"){
 
     YOY_df <- YOY_df %>%
       dplyr::select(indv_name, sex, age, birth_year, population, repro_cycle, fertile, mother, father, L_inf, K, length)
@@ -267,11 +267,11 @@ create.YOY <- function(mothers2, fathers, litters, year, process_by = "age"){
     if(process_by == "length"){
       YOY_df <- YOY_df %>%
         dplyr::select(indv_name, sex, age, birth_year, population, pod, superpod, repro_cycle, fertile, mother, father, L_inf, K, length)
-    }
-  } else if(process_by == "age"){
+    } else if(process_by == "age"){
     YOY_df <- YOY_df %>%
       dplyr::select(indv_name, sex, age, birth_year, population, pod, superpod, repro_cycle, fertile, mother, father)
-  } else{ # if stickiness is off
+  }
+    } else{ # if stickiness is off
     if(process_by == "length"){
 
       YOY_df <- YOY_df %>%
@@ -342,3 +342,11 @@ assign.growth <- function(df, growth_params) {
 update.length.vb <- function(length, L_inf, K) {
   L_inf - (L_inf - length) * exp(-K)
 }
+
+
+#---------------------------------- Calculate population growth ----------------------------------
+calc_growth <- function(N_vec) {
+  mean(diff(log(N_vec)))
+}
+
+#---------------------------------- Solve for s0 to stabilize population growth ----------------------------------

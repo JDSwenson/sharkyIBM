@@ -1,5 +1,7 @@
 #' Define parameters for population simulation
 #'
+#' Let's forget about this function for now (June 2026) and assume that all info is input to calculate_s0 and simulate_population
+#'
 #' Format and prepare input data for individual-based population simulation from user-defined input values.
 #'
 #' @param max_age Integer. Maximum age class (inclusive), so ages are 0:max_age.
@@ -84,41 +86,51 @@ create.pop.data <- function(
 
     F_by_age <- numeric(max_age + 1)
 
-    # Annualized fecundity in breeding ages
+    # Annualized fecundity in breeding ages - UPDATED May 22
     F_by_age[(maturity_age + 1):(max_age + 1)] <-
-      (litter_size * female_fraction) / mating_periodicity
-  }
+      litter_size * female_fraction
+
+    # F_by_age[(maturity_age + 1):(max_age + 1)] <-
+    #   (litter_size * female_fraction) / mating_periodicity
+ }
 
   ## --------------------------- Apply infertility --------------------------- ##
-  # Infertility permanently removes a fraction of females from reproduction
-  F_eff <- F_by_age * (1 - infertility)
+  # Infertility permanently removes a fraction of females from reproduction - UPDATED May 22
+#    F_eff <- F_by_age
+
+     F_eff <- F_by_age * (1 - infertility)
 
   ## --------------------------- Solve for s0 --------------------------- ##
-  if (stable) {
+     if (stable) {
 
-    if (max_age >= 2) {
-      lx_no_s0 <- c(1, cumprod(s1_to_smax[1:(max_age - 1)]))
-    } else {
-      lx_no_s0 <- 1
-    }
 
-    Fa <- F_eff[2:(max_age + 1)]
+       solve_s0 <- function(s0) {
 
-    denom <- sum(lx_no_s0 * Fa)
+         survival_full <- c(s0, s1_to_smax)
 
-    if (!is.finite(denom) || denom <= 0)
-      stop("Euler–Lotka denominator non-positive")
+         # enforce terminal mortality (important for consistency)
+         survival_full[max_age + 1] <- 0
 
-    s0 <- 1 / denom
+         # ✅ survivorship to START of age x
+         lx <- c(1, cumprod(survival_full[1:(max_age - 1)]))
 
-    if (s0 <= 0 || s0 > 1)
-      stop(sprintf("Implied s0 = %.3f not in [0,1]", s0))
+         # ✅ fecundity at ages 1:max_age
+         Fa <- F_eff[2:(max_age + 1)]
 
-    survival_full <- c(s0, s1_to_smax)
+         sum(lx * Fa) - 1
+       }
 
-  } else {
-    survival_full <- as.numeric(survival)
-  }
+
+       s0 <- uniroot(
+         solve_s0,
+         interval = c(1e-8, 1)
+       )$root
+
+       survival_full <- c(s0, s1_to_smax)
+
+     } else {
+       survival_full <- as.numeric(survival)
+     }
 
   ## Enforce terminal mortality
   survival_full[max_age + 1] <- 0
@@ -180,7 +192,7 @@ create.pop.data <- function(
         # If a single dataframe is provided, copy the dataframe into a list of length pop_number
         growth_params_out <- rep(list(
           growth_params
-        ), times = length(pop_number))
+        ), times = pop_number)
       }
     }
   }

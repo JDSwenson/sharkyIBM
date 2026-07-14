@@ -5,9 +5,17 @@
 \title{Simulate age-structured shark populations and sampling}
 \usage{
 \method{simulate}{pop}(
-  input_data,
+  max_age,
+  survival,
+  pop_size,
+  mating_periodicity,
+  maturity_age,
+  litter_size,
   num_mates,
   num_years,
+  osr = 0.5,
+  infertility = 0,
+  F_by_age = F,
   movement_array = NULL,
   popstructure = "panmictic",
   stickiness = NULL,
@@ -18,12 +26,11 @@
   sampling = "random",
   sample_size = NULL,
   sample_years = NULL,
+  growth_params = NULL,
   process_by = "age"
 )
 }
 \arguments{
-\item{input_data}{List of input parameters and settings, created via the create.pop.data() function}
-
 \item{num_mates}{Integer vector or scalar. Number of mates per mother (sampled with replacement).}
 
 \item{num_years}{Integer (>= 1). Number of analysis years after burn-in.}
