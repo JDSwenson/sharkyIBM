@@ -1,74 +1,99 @@
-#' Simulate age-structured shark populations and sampling
+#' Simulate an age-structured population and sample individuals for CKMR
 #'
-#' Runs a forward-time, age-structured simulation across one or more populations,
-#' including reproduction, growth, and survival, with optional sampling of
-#' individuals in specified years. Returns yearly population metrics and sampled
-#' individuals suitable for downstream analysis.
+#' Runs a forward-time, individual-based simulation with full parentage tracking.
+#' The simulation initialises from the stable age distribution implied by a
+#' Leslie matrix, then loops through annual cycles of survival, optional pod
+#' reshuffling, and breeding.  Individuals can be sampled in user-specified years,
+#' producing a dataframe suitable for close-kin mark–recapture analysis.
 #'
-#' @param num_mates Integer vector or scalar. Number of mates per mother (sampled with replacement).
-#' @param num_years Integer (>= 1). Number of analysis years after burn-in.
-#' @param movement_array Three-dimensional array of age-based movement probabilities to locations where individual animals will be sampled. Dimensions should be \[age, sampling_location, population\]. In other words, each population should have its own matrix, ordered the same as the populations. The array should include age 0 individuals, so the number of rows should be max_age+1, and the movement probability for age a should be in the row a+1. For example, the probability to find age 6 individuals from population 1 at sampling location 4 would be specified in the movement_array \[7, 4, 1\].
-#' @param popstructure A character value, specified as either "panmictic" (default) or "structured". "panmictic" means that all individuals across all populations will freely mate with one another; "structured" means that individuals will only mate within their population.
-#' @param stickiness Double, between 0 and 1. Specifies the degree of "stickiness" among familial groups. A value of 1 means that each mother-centric family group will remain together as a pod throughout their lives; a value of 0 means that pods will be randomly shuffled each year composed of random individuals.  If this parameter is defined, then the "superpod_size" parameter must be set as well.
-#' @param sticky_age Integer. This is the age at which the stickiness parameter will be applied. Prior to this age, individuals will remain in the same pod they were born into. Setting sticky_age = max_age will mean that individuals will remain in the same pod they're born into throughout their lives, similar to stickiness = 1.
-#' @param sticky_interval Integer. If 0 < stickiness < 1, this is the number of years individuals will shuffle among pods according to the probability defined in the stickiness parameter e.g., if stickiness = 0 and sticky_interval = 2, then every 2 years, each individual above sticky_age will change pods.
-#' @param superpod_size Integer. How many pods will be combined into a superpod? We do not require this parameter to be a multiple of the number of pods, so in most cases there will be one superpod that combines fewer pods than defined here.
+#' @param max_age Integer. Maximum age in the population.
+#' @param survival Numeric vector of length \code{max_age + 1}. Annual survival
+#'   probabilities for ages 0 through \code{max_age}.  Pass the calibrated
+#'   vector returned by \code{calculate.s0()$survival}.
+#' @param pop_size Integer. Total starting population size (all ages combined).
+#' @param mating_periodicity Integer. Breeding cycle length in years (1 = annual,
+#'   2 = biennial, etc.).
+#' @param maturity_age Integer. Age at first reproduction (knife-edged maturity).
+#' @param litter_size Numeric. Mean litter size per reproductive female.  Realised
+#'   sizes are drawn as \code{1 + rpois(n, litter_size - 1)}, guaranteeing at
+#'   least one offspring per breeding female.
+#' @param num_mates Integer vector or scalar. Number of mates per female per
+#'   breeding event, sampled with replacement from this vector each year.
+#'   Controls the rate of half-siblings in the sampled pedigree: \code{num_mates = 1}
+#'   produces only full siblings within a litter; larger values allow half-siblings.
+#' @param num_years Integer. Total number of years to simulate.  Should be large
+#'   enough that sampling years occur well after founders have died (see Details).
+#' @param female_fraction Numeric in (0, 1). Proportion of offspring that are
+#'   female.  Default 0.5.
+#' @param infertility Numeric in \[0, 1). Probability that an individual is
+#'   permanently infertile.  Reserved for future use; currently all individuals
+#'   are treated as fertile.
+#' @param stickiness Numeric in \[0, 1\] or NULL. Pod-fidelity probability.
+#'   1 = individuals never leave their pod; 0 = individuals always move at each
+#'   shuffle opportunity.  NULL disables pod dynamics entirely.
+#' @param sticky_age Integer or NULL. Minimum age at which pod shuffling begins.
+#' @param sticky_interval Integer or NULL. Years between pod-shuffle events.
+#' @param superpod_size Integer or NULL. Number of pods per superpod.  Mating
+#'   and (optionally) sampling occur within superpods.
+#' @param male_behavior Character or NULL. \code{"random"} (all mature males
+#'   in the superpod may sire offspring) or \code{"strong_bull"} (only the
+#'   oldest male per superpod sires offspring).  NULL behaves like \code{"random"}
+#'   without pod restriction.
+#' @param sample_size Integer (scalar or vector).
+#'   \itemize{
+#'     \item If \code{sampling = "random"}: scalar giving total individuals to
+#'           sample per year.
+#'     \item If \code{sampling = "superpod"}: vector of per-superpod sample
+#'           sizes; \code{length(sample_size)} superpods are randomly chosen.
+#'   }
+#' @param sample_years Integer (scalar or vector).
+#'   \itemize{
+#'     \item Scalar: sample the last \code{sample_years} years of the simulation.
+#'     \item Vector: sample in these specific simulation years.
+#'     \item NULL: no sampling (only population metrics are returned).
+#'   }
+#' @param sampling Character. \code{"random"} (uniform random sample from the
+#'   full population) or \code{"superpod"} (sample within randomly chosen
+#'   superpods).  Default \code{"random"}.
+#' @param process_by Character. \code{"age"} (default).  \code{"length"} is
+#'   reserved for future length-based dynamics.
+#' @param growth_params Reserved for future length-based dynamics.
+#' @param popstructure Character. \code{"panmictic"} (default) or
+#'   \code{"structured"}.  Reserved for future multi-population support.
+#' @param movement_array Reserved for future movement/dispersal support.
 #'
 #' @details
-#' This function orchestrates initialization, breeding, growth, survival, and optional
-#' sampling of individuals. It relies on several helper functions (e.g., for offspring
-#' generation, reproduction probabilities, dispersal, and sampling) that are defined
-#' elsewhere in the package.
+#' **Founders and burn-in:**
+#' Individuals in the starting population are "founders" whose parents are
+#' unknown (coded as \code{mother_id = 0, father_id = 0}).  Founder-parented
+#' individuals persist for up to \code{max_age + maturity_age} years.  To
+#' ensure that all sampled individuals have known (non-founder) parents,
+#' sampling should not begin before year \code{max_age + maturity_age}.  A
+#' warning is issued if \code{sample_years} violates this.
 #'
-#' The return value is a list with population metrics per year and any sampled
-#' individuals.
+#' **Pod dynamics:**
+#' When \code{stickiness} is not NULL, the population is organised into pods
+#' (family groups) that are aggregated into superpods (mating/sampling units).
+#' Offspring inherit their mother's pod.  At intervals of
+#' \code{sticky_interval} years, individuals at or above \code{sticky_age}
+#' may move to a new pod with probability \code{1 - stickiness}.  If a
+#' superpod loses all mature males, females in that superpod mate with males
+#' from other superpods (cross-superpod fallback) to prevent reproductive
+#' failure.
 #'
-#' @return A list with two elements:
-#' \itemize{
-#'   \item \code{pop.size}: data frame/tibble of population metrics by year and population.
-#'   \item \code{samples.df}: data frame/tibble of sampled individuals (may be empty if no sampling occurs).
-#' }
-#' The list is returned invisibly.
-#'
-#' @examples
-#' \dontrun{
-#' # Minimal scaffold showing inputs (uses tiny sizes and fake tables)
-#' init_pop_size <- c(MX = 10, ES = 8, EC = 12)
-#' Nages <- matrix(c(3,4,3,
-#'                   4,2,4,
-#'                   3,2,5), nrow = 3, byrow = TRUE)
-#' colnames(Nages) <- names(init_pop_size)
-#'
-#' age_length_df <- tibble::tibble(
-#'   age = 0:10,
-#'   mean_length = seq(80, 130, length.out = 11),
-#'   age_length_sd = rep(8, 11)
-#' )
-#'
-#' out <- simulate.pop(
-#'   init_pop_size = init_pop_size,
-#'   init_prop_female = 0.5,
-#'   Nages = Nages,
-#'   mating_periodicity = 1,
-#'   repro_age = 5,
-#'   YOY_survival = 0.7,
-#'   juvenile_survival = 0.85,
-#'   adult_survival = 0.92,
-#'   max_age = 20,
-#'   num_mates = 1:2,
-#'   ff = list(),
-#'   burn_in = 0,
-#'   num_years = 1,
-#'   age_length_df = age_length_df
-#' )
+#' @return A named list (returned invisibly) with two elements:
+#' \describe{
+#'   \item{samples}{A \code{data.table} of sampled individuals with columns:
+#'     \code{id}, \code{birth_year}, \code{age}, \code{sex}, \code{mother_id},
+#'     \code{father_id}, \code{capture_year}, \code{population}, and (if pods
+#'     are active) \code{pod}, \code{superpod}.  Empty if no sampling occurs.}
+#'   \item{pop_summary}{A \code{data.table} of population counts by year, age,
+#'     and sex: columns \code{year}, \code{sex}, \code{age}, \code{N}.}
 #' }
 #'
-#' @seealso
-#' Helper functions you will define and document separately, e.g.,
-#' offspring generation and sampling utilities.
-#'
+#' @importFrom data.table data.table set rbindlist
+#' @importFrom stats runif rpois
 #' @export
-
 simulate.pop <- function(max_age,
                          survival,
                          pop_size,
@@ -77,669 +102,444 @@ simulate.pop <- function(max_age,
                          litter_size,
                          num_mates,
                          num_years,
-                         osr = 0.5,
-                         infertility = 0,
-                         F_by_age = F,
-                         movement_array = NULL,
-                         popstructure = "panmictic", #panmictic or "structured"
-                         stickiness = NULL,
-                         sticky_age = NULL,
+                         female_fraction = 0.5,
+                         infertility     = 0,
+                         stickiness      = NULL,
+                         sticky_age      = NULL,
                          sticky_interval = NULL,
-                         superpod_size = NULL,
-                         male_behavior = NULL, # "mischievous" or "strong_bull"
-                         sampling = "random", # "random" or "superpod"
-                         sample_size = NULL,
-                         sample_years = NULL,
-                         growth_params = NULL,
-                         process_by = "age" # age or length
-                         ){
+                         superpod_size   = NULL,
+                         male_behavior   = NULL,
+                         sample_size     = NULL,
+                         sample_years    = NULL,
+                         sampling        = "random",
+                         process_by      = "age",
+                         growth_params   = NULL,
+                         popstructure    = "panmictic",
+                         movement_array  = NULL) {
 
-  #------------------------ Data setup ------------------------
-  init_pop_size <- input_data$numbers_at_age
-  max_age <- max(input_data$numbers_at_age$age)
-  f <- max(input_data$fecundity)
-  litter_size <- input_data$litter_size
-  s_years <- c(((num_years - sample_years)+1): num_years) # which years will be sampled?
+  # ═══════════════════════════════════════════════════════════════════════════
 
-  # Save growth parameters as a tibble and specify population as the corresponding list index
-  growth_params <- purrr::imap(
-    input_data$growth_params,
-    ~ dplyr::mutate(.x, population = .y)
-  ) %>%
-    purrr::list_rbind()
+  # INPUT PARSING AND SETUP
+  # ═══════════════════════════════════════════════════════════════════════════
 
-  infertility <- input_data$infertility
-  mating_periodicity <- input_data$mating_periodicity
-  female_fraction <- input_data$female_fraction
-  maturity_age <- input_data$maturity_age
+  use_pods <- !is.null(stickiness)
 
-#  YOY_survival <- input_data$s0
-#  juvenile_survival <- input_data$survival[2:(maturity_age)]
-#  adult_survival <- input_data$survival[maturity_age:(max_age-1)]
-#  ff <- f / female_fraction # Female fecundity per breeding event at equilibrium
-  survival_df <- tibble(age = c(0:max_age), survival_rate = input_data$survival)
+  # ── Parse sample_years into an integer vector of simulation years ──
+  # Scalar → sample the last N years; vector → specific years; NULL → none.
+  if (is.null(sample_years) || is.null(sample_size)) {
+    s_years <- integer(0)
+  } else if (length(sample_years) == 1L) {
+    s_years <- seq.int(num_years - sample_years + 1L, num_years)
+  } else {
+    s_years <- as.integer(sample_years)
+  }
+  do_sampling <- length(s_years) > 0L
 
-
-  # Make initial
-  init_ages <- rep(init_pop_size$age, times = init_pop_size$N)
-  init_pops <- rep(init_pop_size$population, times = init_pop_size$N)
-  init_sex <- sample(
-    c("F", "M"),
-    size = sum(init_pop_size$N),
-    prob = c(female_fraction, 1 - female_fraction),
-    replace = T)
-  init_repro_cycle <- sample(
-    c(1:mating_periodicity),
-    size = sum(init_pop_size$N),
-    replace = T)
-  init_fertile_vec <- runif(n = length(init_repro_cycle)) > infertility
-
-  # The simulation should run long enough to get rid of founders, so we just need placeholders for length.
-  # Here, we'll define length somewhat arbitrarily as L_inf/2
-  if(process_by == "length"){
-  init_growth_params <- growth_params %>% dplyr::select(sex, population, L_inf, K) %>%
-    mutate(length = L_inf/2)
-}
-
-  # Summarize population numbers
-  total_pop_sizes_df <- init_pop_size %>% group_by(population) %>%
-    reframe(total = sum(N, na.rm = T)) %>%
-    arrange(population)
-
-  total_pop_sizes_vec <- rep(total_pop_sizes_df$population, times = total_pop_sizes_df$total)
-
-  ###############################################`
-  ####---------Set up initial population-----####
-  ###############################################`
-  # Initial population
-# init_pop <- tibble(
-#   indv_name   = sprintf("%020d", seq_len(sum(init_pop_size$N))),
-#   birth_year  = -1L,
-#   age         = init_ages,
-#   mother      = "xxxxx",
-#   father      = "xxxxx",
-#   sex         = init_sex,
-#   population  = total_pop_sizes_vec
-# ) %>%
-#   mutate(
-#     repro_cycle = if_else(
-#       sex == "F",
-#       init_repro_cycle[row_number()],
-#       NA_integer_
-#     ),
-#     fertile = init_fertile_vec
-#   )
-
-  init_pop <- tibble(
-    indv_name   = sprintf("%020d", seq_len(sum(init_pop_size$N))),
-    birth_year  = -1L,
-    age         = init_ages,
-    mother      = "xxxxx",
-    father      = "xxxxx",
-    sex         = init_sex,
-    population  = total_pop_sizes_vec
-  ) %>%
-    mutate(
-      repro_cycle = if_else(
-        sex == "F",
-        init_repro_cycle[row_number()],
-        NA_integer_
+  # Warn if any sampling year is early enough that founder-parented individuals
+  # may still be alive.  For CKMR, every sampled individual's parents should
+  # themselves be trackable (non-founder) individuals.
+  min_safe_year <- max_age + maturity_age
+  if (do_sampling && min(s_years) < min_safe_year) {
+    warning(sprintf(
+      paste0(
+        "Sampling begins in year %d, but founder-parented individuals may ",
+        "persist until year %d (max_age + maturity_age). Consider increasing ",
+        "num_years or shifting sample_years."
       ),
-      fertile = init_fertile_vec
+      min(s_years), min_safe_year
+    ))
+  }
+
+  # Build the survival lookup vector.  Entry i corresponds to age i-1, so
+  # surv_vec[age + 1] gives the correct rate for any individual.
+  surv_vec <- survival
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STABLE AGE DISTRIBUTION (Leslie matrix)
+  # ═══════════════════════════════════════════════════════════════════════════
+  # We use the (calibrated) survival vector to construct a Leslie matrix and
+  # extract its stable age distribution.  Initialising the IBM from this
+  # distribution minimises transient dynamics at the start of the simulation.
+
+  n_classes <- max_age + 1L
+  A <- matrix(0, nrow = n_classes, ncol = n_classes)
+
+  # Expected female offspring per mature female per year
+  ff    <- litter_size * female_fraction / mating_periodicity
+  f_vec <- c(rep(0, maturity_age), rep(ff, n_classes - maturity_age))
+
+  A[1, ] <- f_vec
+  for (i in seq_len(max_age)) A[i + 1L, i] <- survival[i + 1L]
+  A[2, 1] <- survival[1]
+
+  # Right eigenvector of the dominant eigenvalue, normalised to sum to 1
+  w        <- Mod(eigen(A)$vectors[, 1])
+  stable_A <- w / sum(w)
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # INITIALISE POPULATION
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # Convert the stable proportions into integer counts at each age class.
+  init_N    <- pmax(round(stable_A * pop_size), 0L)
+  init_ages <- rep(0:max_age, times = init_N)
+  n_init    <- sum(init_N)
+
+  init_sex <- sample(c("F", "M"), n_init,
+                     prob = c(female_fraction, 1 - female_fraction),
+                     replace = TRUE)
+
+  # The population is stored as a data.table for in-place modification and
+  # fast subsetting, which is critical at million-individual scales.
+  #
+  # Key columns:
+  #   id          – unique integer identifier, never recycled
+  #   birth_year  – simulation year of birth (0 for founders)
+  #   age         – current age in years
+  #   sex         – "F" or "M"
+  #   mother_id   – id of mother (0 = founder / unknown)
+  #   father_id   – id of father (0 = founder / unknown)
+  #   repro_cycle – which phase of the breeding cycle this female breeds in
+  #                 (1:mating_periodicity for females, NA for males)
+  #   fertile     – TRUE/FALSE (always TRUE for now; reserved for infertility)
+  #   population  – population label (always 1 for now; reserved for structure)
+  pop <- data.table(
+    id          = seq_len(n_init),
+    birth_year  = 0L,
+    age         = init_ages,
+    sex         = init_sex,
+    mother_id   = 0L,
+    father_id   = 0L,
+    repro_cycle = ifelse(
+      init_sex == "F",
+      sample.int(mating_periodicity, n_init, replace = TRUE),
+      NA_integer_
+    ),
+    fertile    = TRUE,
+    population = 1L
+  )
+
+  # ── Pod / superpod initialisation ──────────────────────────────────────────
+  # Pods are small family groups; superpods aggregate pods into mating and
+  # sampling units.  The mapping from pod → superpod is fixed at initialisation
+  # and stored as a pre-computed lookup vector (pod_to_sp) for O(1) access.
+  pod_to_sp <- NULL
+  n_sp      <- 0L
+
+  if (use_pods) {
+    # Each mature female seeds one pod; all other individuals are assigned to
+    # an existing pod at random.
+    mat_f_idx <- which(pop$sex == "F" & pop$age >= maturity_age)
+    n_pods    <- length(mat_f_idx)
+    if (n_pods == 0L) stop("No mature females in the initial population.")
+
+    pod_vec            <- rep(NA_integer_, n_init)
+    pod_vec[mat_f_idx] <- seq_len(n_pods)
+    pod_vec[is.na(pod_vec)] <- sample.int(n_pods, sum(is.na(pod_vec)),
+                                          replace = TRUE)
+
+    # Pre-compute the persistent pod → superpod mapping.
+    n_sp      <- ceiling(n_pods / superpod_size)
+    pod_to_sp <- rep(seq_len(n_sp), each = superpod_size, length.out = n_pods)
+
+    set(pop, j = "pod",      value = pod_vec)
+    set(pop, j = "superpod", value = pod_to_sp[pod_vec])
+    set(pop, j = "pod_year", value = 0L)
+  }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PRE-ALLOCATE OUTPUT STORAGE
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # Population metrics: one summary table per year, combined at the end.
+  pop_counts <- vector("list", num_years)
+
+  # Sampled individuals: pre-allocate a list with one slot per sample year.
+  sample_list <- if (do_sampling) vector("list", length(s_years)) else list()
+  sample_idx  <- 0L
+
+  # Running ID counter — ensures every individual across all years gets a
+  # unique id, which is essential for unambiguous parentage tracking.
+  next_id <- n_init + 1L
+
+  # Bull registry for strong_bull mode: integer vector indexed by superpod
+  # number.  bull_registry[sp] holds the id of the current dominant male in
+  # superpod sp (0 = vacant, needs election).
+  bull_registry <- NULL
+  if (use_pods && !is.null(male_behavior) && male_behavior == "strong_bull") {
+    bull_registry <- rep(0L, n_sp)
+  }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # MAIN SIMULATION LOOP
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Each iteration represents one year:
+  #   1. Survival — stochastic mortality based on age-specific rates
+  #   2. Aging    — all survivors age by one year; those past max_age die
+  #   3. Pod shuffling (if active) — probabilistic pod reassignment
+  #   4. Breeding — mate assignment, offspring creation with full parentage
+  #   5. Sampling (if this is a sample year) — draw individuals, store metadata
+  #   6. Metrics  — record numbers-at-age-and-sex
+
+  for (yr in seq_len(num_years)) {
+
+    # ─── 1 & 2. Survival + aging ─────────────────────────────────────────────
+    # Look up each individual's survival probability via direct vector indexing
+    # (no table join), then draw independent Bernoulli outcomes.
+    rates <- surv_vec[pop$age + 1L]
+    alive <- runif(nrow(pop)) <= rates
+    pop   <- pop[alive]
+
+    # Age all survivors by one year, then remove any that exceed max_age.
+    set(pop, j = "age", value = pop$age + 1L)
+    pop <- pop[pop$age <= max_age]
+
+    if (nrow(pop) == 0L) stop("Population went extinct in year ", yr, ".")
+
+    # ─── 3. Pod shuffling ────────────────────────────────────────────────────
+    # At every sticky_interval years, individuals at or above sticky_age have
+    # a (1 - stickiness) probability of moving to a randomly chosen pod.
+    # pod_year tracks the simulation year of each individual's last shuffle
+    # event, so the interval is measured individually.
+    if (use_pods && !is.null(sticky_interval) && !is.null(sticky_age)) {
+      elig <- which(pop$age >= sticky_age &
+                      (yr - pop$pod_year) >= sticky_interval)
+      if (length(elig) > 0L) {
+        movers <- elig[runif(length(elig)) > stickiness]
+        if (length(movers) > 0L) {
+          new_pods <- sample(unique(pop$pod), length(movers), replace = TRUE)
+          set(pop, i = movers, j = "pod",      value = new_pods)
+          set(pop, i = movers, j = "superpod", value = pod_to_sp[new_pods])
+        }
+        # Reset the shuffle clock for all eligible individuals (movers and
+        # stayers alike) so the next opportunity is correctly timed.
+        set(pop, i = elig, j = "pod_year", value = as.integer(yr))
+      }
+    }
+
+    # ─── 4. Breeding ─────────────────────────────────────────────────────────
+    # Identify the breeding-cycle phase for this year.  The modular arithmetic
+    # cycles through 1:mating_periodicity, so roughly 1/mating_periodicity of
+    # mature females breed each year.
+    cycle <- (yr %% mating_periodicity) + 1L
+
+    mother_rows <- which(
+      pop$sex == "F" &
+        pop$age >= maturity_age &
+        pop$repro_cycle == cycle
+        # & pop$fertile  # uncomment when infertility is implemented
     )
 
-  if(process_by == "length"){
+    mature_male_mask <- pop$sex == "M" & pop$age >= maturity_age
+    has_males <- any(mature_male_mask)
+
+    if (length(mother_rows) > 0L && has_males) {
+      n_mothers <- length(mother_rows)
+
+      # Each mother independently draws her number of mates and litter size.
+      n_mates_vec  <- sample(num_mates, n_mothers, replace = TRUE)
+      litter_sizes <- 1L + rpois(n_mothers, lambda = litter_size - 1)
+      max_nm       <- max(n_mates_vec)
+
+      # ── Build father matrix ──
+      # father_mat is an (n_mothers × max_nm) integer matrix where row i holds
+      # the IDs of the males that mother i mates with.  Only the first
+      # n_mates_vec[i] columns are used for mother i; the rest are ignored
+      # during offspring assignment.
+      #
+      # We fill this matrix differently depending on pod structure and male
+      # behavior, looping over superpods (not individual mothers) to keep the
+      # operation fast even at large population sizes.
+      father_mat <- matrix(NA_integer_, nrow = n_mothers, ncol = max_nm)
+
+      if (use_pods) {
+        mother_superpods <- pop$superpod[mother_rows]
+        all_mature_ids   <- pop$id[mature_male_mask]
+        all_mature_sps   <- pop$superpod[mature_male_mask]
+
+        if (!is.null(male_behavior) && male_behavior == "strong_bull") {
+          # ── Strong-bull mode ──
+          # One dominant male per superpod sires all offspring in that superpod.
+          # Check which existing bulls are still alive; elect new bulls for any
+          # superpod whose bull has died.
+
+          # Mark dead bulls as vacant
+          alive_ids <- pop$id
+          bull_registry[!bull_registry %in% c(0L, alive_ids)] <- 0L
+
+          # Elect new bulls for vacant superpods (oldest mature male wins)
+          vacant <- which(bull_registry == 0L)
+          if (length(vacant) > 0L) {
+            mature_males_dt <- data.table(
+              id       = all_mature_ids,
+              age      = pop$age[mature_male_mask],
+              superpod = all_mature_sps
+            )
+            candidates <- mature_males_dt[
+              superpod %in% vacant,
+              .(bull_id = id[which.max(age)]),
+              by = superpod
+            ]
+            if (nrow(candidates) > 0L) {
+              bull_registry[candidates$superpod] <- candidates$bull_id
+            }
+          }
+
+          # Fill father_mat: every column gets the bull for that mother's superpod
+          for (sp in unique(mother_superpods)) {
+            sp_mask <- which(mother_superpods == sp)
+            bull_id <- bull_registry[sp]
+            # If this superpod still has no bull (no mature males at all),
+            # fall back to any living bull from another superpod.
+            if (bull_id == 0L) bull_id <- sample(all_mature_ids, 1L)
+            father_mat[sp_mask, ] <- bull_id
+          }
+
+        } else {
+          # ── Random mating within superpod ──
+          # Build a list of available father IDs per superpod for fast lookup,
+          # then fill father_mat by superpod (one vectorised sample call per
+          # superpod rather than per mother).
+          father_by_sp <- split(all_mature_ids, all_mature_sps)
+
+          for (sp in unique(mother_superpods)) {
+            sp_mask   <- which(mother_superpods == sp)
+            n_sp_moms <- length(sp_mask)
+            pool      <- father_by_sp[[as.character(sp)]]
+            # Cross-superpod fallback: if no mature males in this superpod,
+            # allow mating with males from any superpod.
+            if (is.null(pool) || length(pool) == 0L) pool <- all_mature_ids
+            father_mat[sp_mask, ] <- sample(pool, n_sp_moms * max_nm,
+                                            replace = TRUE)
+          }
+        }
 
-  init_pop <- init_pop %>%
-    left_join(init_growth_params, by = c("sex", "population"))
-
-  }
-
-  # Add pods if including pod structure
-  if(!is.null(stickiness)){
-
-    # Assign pod as a random number between 1 and n_females -- init males will be assigned a pod after they mate with females
-    init_pop <- init_pop %>%
-      group_by(sex) %>%
-      mutate(
-        pod = if_else(
-          sex == "F",
-          sample.int(n()),
-          NA_integer_
-        )
-      ) %>%
-      ungroup()
-
-    }
-
-  # TO DO: Add code to quickly and easily simulate initial starting lengths for all individuals from age_length_df (if supplied). Might want to just add to the tibble above, if can simulate in create_input_data.R script.
-# if(!is.null(age_length_df)){
-#   # Join with age.length table, assign age, and repro probability
-#   init_pop2 <- init_pop %>%
-#     lazy_dt() %>%
-#     left_join(age_length_df, by = "age") %>%
-#     mutate(indv_length = rtruncnorm(n(), mean = mean_length, sd = age_length_sd, a = 0.2)) %>% #Assign individual length -- make sure nobody grows backwards, so set lower limit of 0.2
-#     mutate(beta_0 = case_when(
-#       population == "MX" ~ MX.beta.0,
-#       population == "ES" ~ ES.beta.0,
-#       population == "EC" ~ EC.beta.0,
-#       TRUE ~ NA),
-#       beta_1 = case_when(
-#         population == "MX" ~ MX.beta.1,
-#         population == "ES" ~ ES.beta.1,
-#         population == "EC" ~ EC.beta.1,
-#         TRUE ~ NA)) %>% # Save values for growth curve so we can vectorize with case_when
-#     as_tibble() %>%
-#     mutate(repro_prob = case_when( # Store probability of reproduction
-#       age < 5 ~ 0, # No individuals younger than age 5 will reproduce (5 is an arbitrary number)
-#       age >= 5 ~ repro.prob(beta.0 = beta_0, beta.1 = beta_1, TLflex = indv_length),
-#       TRUE ~ NA))
-# }
-
-  ####----------Breeding----------####
-  repro_cycle_vec <- rep(1:mating_periodicity, times = num_years+1) # Generate a vector which will be used to determine if it is an even or odd breeding year (or a 1/3 breeding year)
-
-  ####--------- For year 0 breeding
-  #------------Mothers------------#
-  # Mothers with knife-edged maturity to allow the population to stay stable (at least for now)
-  if(!is.null(maturity_age)){
-  mothers <- init_pop %>% filter(sex == 'F',
-                                 age >= maturity_age,
-                                 fertile, # filters to only keep indvs with fertile == T, but is faster without the conditional statement
-                                 repro_cycle == repro_cycle_vec[1]) # Determine which females are available to breed in this year
-  }
-
-  # TO DO: create vector of mothers from age-specific fecundity vector
-  mothers <- mothers %>% mutate(n_mates = sample(num_mates, size = n(), replace = TRUE)) # Assign random number of mates to each mother
-
-  # Make a new dataframe where each row corresponds to an instance of mating
-  # mothers2 <- mothers %>%
-  #   lazy_dt() %>%
-  #   group_by(indv_name) %>%
-  #   slice(rep(1:n(), n_mates)) %>%
-  #   ungroup() %>%
-  #   select(indv_name, population) %>%
-  #   rename(mother = indv_name) %>%
-  #   as_tibble()
-
-  # Keep pods in mothers dataframe if including pod structure
-  if(!is.null(stickiness)){
-
-  mothers2 <- mothers %>%
-    tidyr::uncount(n_mates, .remove = FALSE) %>%
-    select(indv_name, population, pod) %>%
-    rename(mother = indv_name)
-  } else {
-
-  mothers2 <- mothers %>%
-    tidyr::uncount(n_mates, .remove = FALSE) %>%
-    select(indv_name, population) %>%
-    rename(mother = indv_name)
-}
-
-  # total litter size per reproductive female (guaranteed >= 1)
-  litters <- mothers2 %>%
-    distinct(mother, population) %>%
-    mutate(
-      litter_size = 1 + rpois(n(), lambda = litter_size - 1)
-    )
-
-  #------------Fathers------------#
-  fathers <- init_pop %>% filter(sex=='M',
-                                 age >= maturity_age,
-                                 fertile
-                                 ) %>% # Uncomment for age-based maturity
-    select(indv_name, population)
-
-    # Create dataframe of mating events and generate initial offspring from each mating event
-    YOY_df <- create.YOY.init(mothers2, fathers, litters, process_by = process_by)
-
-    # Add pods for fathers if including pod structure
-    if(!is.null(stickiness)){
-
-      pods_vec <- YOY_df %>% pull(pod)
-
-      # Assign each father to one of the pods of the females he mated with
-      pod_fathers <- YOY_df %>% distinct(father, .keep_all = T) %>%
-        select(indv_name = father, father_pod = pod) # could change to slice_sample if we want to make the pod totally random, but I don't think it matters
-
-      # Join dataframe of fathers with assigned pod to init_pop
-      init_pop <- init_pop %>% left_join(pod_fathers, by = "indv_name") %>%
-        mutate(pod = ifelse(
-          is.na(father_pod) != T,
-          father_pod,
-          pod
-        )) %>%
-        select(-father_pod) %>%
-        mutate(pod = ifelse( # Juvenile founding males do not have a pod yet, so we'll assign one here.
-          is.na(pod) == T,
-          sample(pods_vec, size = n(), replace = T),
-          pod
-        ))
-
-    }
-
-  # This dataframe holds the population at the end of the first year of the simulation
-  year_end_pop_0 <- bind_rows(init_pop, YOY_df)
-
-  # Create superpods -- number of pods in each superpod is specified via superpod_size
-  if(!is.null(stickiness)){
-
-    pods <- year_end_pop_0 %>%
-      distinct(pod) %>%
-      mutate(
-        superpod = rep(
-          seq_len(ceiling(n() / superpod_size)),
-          each = superpod_size
-        )[sample(n())]
-      )
-
-    loopy_pop <- year_end_pop_0 %>%
-      left_join(pods, by = "pod") %>%
-      mutate(pod_year = 0)
-
-    # If male_behavior %in% c("mischievous", "family_oriented"), then we do not need to do anything special to assign superpods for now
-    if(male_behavior == "strong_bull"){
-
-      if(process_by == "age"){
-
-        # Randomly pick one father for each superpod
-        bulls <- data1 %>% dplyr::filter(sex=='M',
-                                           age >= maturity_age) %>%
-          group_by(superpod) %>%
-          slice_sample(n = 1) %>%
-          ungroup() %>%
-          select(indv_name, population, pod, superpod)
-
-      }else if(process_by == "length"){
-
-        bulls <- data1 %>% dplyr::filter(sex=='M',
-                                         age >= maturity_age) %>%
-          group_by(superpod) %>%
-          slice_max(length, n = 1, with_ties = FALSE) %>%
-          ungroup() %>%
-          select(indv_name, population, pod, superpod)
-
-      }
-    }
-  } else {
-
-    loopy_pop <- year_end_pop_0
-
-  }
-
-  # At the end of year 0 ...
-  message(paste("year 0, Population ", names(table(loopy_pop$population)), ": N_mothers=", table(mothers2$population), ", N_pups=", table(YOY_df$population), ", Total N=", table(loopy_pop$population) , sep=""))
-
-  #############################################################`
-  ####---------Loop through remaining simulation years-----####
-  #############################################################`
-
-  pop_size <- data.frame() # Initialize dataframe for storing population size
-
-  loopy_list <- list() # Make list to store dataframe of population for each year, where each element corresponds to the year e.g. loopy.list[[1]] is the population from the first year -- to save space, we won't populate this for now
-  #plot_list <- list() # If we want to plot number of mature/breeding females/males each year for each iteration
-
-  samples_df <- NULL
-
-  parents_tibble <- tibble() # This will store info on offspring distribution per parent
-  moms_temp = dads_temp <- NULL
-
-  for(v in 1:num_years){ # Loop through all of the years in the simulation - the burn in and the years that matter
-
-    # Assign survival or mortality based on age-specific survival probabilities
-    data1 <- loopy_pop %>% left_join(survival_df, by = "age") %>%
-      mutate(survival = runif(n()) <= survival_rate) %>%
-      dplyr::filter(survival) %>%
-      select(-c(survival_rate, survival)) %>%
-      mutate(age = age + 1)
-    #If individuals are older than max_age, they will be killed after they reproduce
-
-    if(process_by == "length"){
-
-      data1 <- data1 %>% mutate(length = update.length.vb(length, L_inf, K))
-    }
-
-    if(!is.null(stickiness)){
-
-      # Index superpods so that we can ensure that all pods stay in the same superpod
-      superpod_index <- data1 %>% distinct(pod, superpod)
-
-      # Make separate dataframe of individuals that need to (potentially) change pods
-      temp_pod_df <- data1 %>% filter(age >= sticky_age,
-                                      v - pod_year == sticky_interval) %>%
-        mutate(
-          change_pod = runif(n()) > stickiness
-        ) %>%
-        select(-superpod) %>%
-        mutate(pod = ifelse(
-          change_pod == T,
-          sample(superpod_index$pod, replace = T),
-          pod
-        )) %>%
-        left_join(superpod_index, by = "pod")
-
-
-      data1 <- data1 %>% filter(age < sticky_age |
-                       v - pod_year != sticky_interval) %>%
-        bind_rows(temp_pod_df)
-
-    }
-
-    ####----------Breeding----------####
-    #------------Mothers------------#
-    mothers <- data1 %>% filter(sex == 'F',
-                                age >= maturity_age,
-                                fertile, # filters to only keep indvs with fertile == T, but is faster without the conditional statement
-                                repro_cycle == repro_cycle_vec[v + 1]) # Determine which females are available to breed in this year
-
-    # Add column that contains the number of mates each mother will mate with this year
-    mothers <- mothers %>% mutate(n_mates = sample(num_mates, size = nrow(mothers), replace = TRUE))
-
-    # Make a new row where each row corresponds to an instance of mating
-    # mothers2 <- mothers %>%
-    #   lazy_dt() %>%
-    #   group_by(indv_name) %>%
-    #   slice(rep(1:n(), n_mates)) %>%
-    #   ungroup() %>%
-    #   select(indv_name, population) %>%
-    #   rename(mother = indv_name) %>%
-    #   as_tibble()
-
-    # Keep pods if including pod structure
-    if(!is.null(stickiness)){
-
-      mothers2 <- mothers %>%
-        tidyr::uncount(n_mates, .remove = FALSE) %>%
-        select(indv_name, population, pod, superpod) %>%
-        rename(mother = indv_name)
-
-    } else{
-
-      mothers2 <- mothers %>%
-        tidyr::uncount(n_mates, .remove = FALSE) %>%
-        select(indv_name, population) %>%
-        rename(mother = indv_name)
-
-    }
-
-    # total litter size per reproductive female (guaranteed >= 1)
-    litters <- mothers2 %>%
-      distinct(mother, population) %>%
-      mutate(
-        litter_size = 1 + rpois(n(), lambda = litter_size - 1)
-      )
-
-    if(!is.null(male_behavior)){
-
-      if(male_behavior == "mischievous"){
-
-        # Same as default behavior
-        fathers <- data1 %>% dplyr::filter(sex=='M',
-                                           age >= maturity_age) %>%
-          select(indv_name, population, pod, superpod)
-
-    } else if(male_behavior == "family_oriented"){
-      # Same as default behavior
-      fathers <- data1 %>% dplyr::filter(sex=='M',
-                                         age >= maturity_age) %>%
-        select(indv_name, population, pod, superpod)
-
-    } else if(male_behavior == "strong_bull"){
-
-      # which bulls are still alive?
-      living_bulls <- bulls[bulls$indv_name %in% data1$indv_name,]
-
-      if(process_by == "age"){
-
-        # Randomly pick one bull per superpod IF there isn't already a living bull for that superpod
-        bulls <- data1 %>% dplyr::filter(sex=='M',
-                                         age >= maturity_age,
-                                         !superpod %in% living_bulls$superpod) %>%
-          group_by(superpod) %>%
-          slice_sample(n = 1) %>%
-          ungroup() %>%
-          #        distinct(superpod, .keep_all = T) %>%
-          select(indv_name, population, pod, superpod) %>%
-          bind_rows(living_bulls)
-
-        # Just one father for each superpod
-        fathers <- bulls
-
-      } else if(process_by == "length"){
-
-        bulls <- data1 %>% dplyr::filter(sex=='M',
-                                         age >= maturity_age,
-                                         !superpod %in% living_bulls$superpod) %>%
-          group_by(superpod) %>%
-          slice_max(length, n = 1, with_ties = FALSE) %>%
-          ungroup() %>%
-          select(indv_name, population, pod, superpod)
-
-        # Just one father for each superpod
-        fathers <- bulls
-
-      }
-      }
       } else {
-      fathers <- data1 %>% dplyr::filter(sex=='M',
-                                         age >= maturity_age) %>%
-        select(indv_name, population)
-
+        # ── No pods: panmictic mating ──
+        # All mature males form a single mating pool.
+        all_father_ids   <- pop$id[mature_male_mask]
+        father_mat[]     <- sample(all_father_ids, n_mothers * max_nm,
+                                   replace = TRUE)
       }
 
-    # Confirm that each superpod has at least one mature male and one mature female
-    if(!is.null(stickiness)){
+      # ── Create offspring ──
+      n_yoy <- sum(litter_sizes)
 
-      ### PICK UP HERE AFTER MAY 1:
+      # Expand mother index: one entry per offspring, pointing back to the
+      # row in mother_rows that produced it.
+      off_mother_idx <- rep(seq_len(n_mothers), times = litter_sizes)
 
-      # Identify superpods that lack a reproductive male or female
-      missing_superpods <- setdiff(
-        union(fathers$superpod, mothers$superpod),
-        intersect(fathers$superpod, mothers$superpod)
+      # For each offspring, pick one of its mother's mates uniformly.
+      # ceiling(runif(n) * k) produces uniform integers in 1:k without the
+      # overhead of per-offspring sample() calls.
+      off_n_mates <- n_mates_vec[off_mother_idx]
+      mate_col    <- as.integer(ceiling(runif(n_yoy) * off_n_mates))
+
+      # Look up mother and father IDs
+      off_mother_id <- pop$id[mother_rows[off_mother_idx]]
+      off_father_id <- father_mat[cbind(off_mother_idx, mate_col)]
+
+      yoy_sex <- sample(c("F", "M"), n_yoy,
+                        prob = c(female_fraction, 1 - female_fraction),
+                        replace = TRUE)
+
+      yoy <- data.table(
+        id          = seq.int(next_id, length.out = n_yoy),
+        birth_year  = as.integer(yr),
+        age         = 0L,
+        sex         = yoy_sex,
+        mother_id   = off_mother_id,
+        father_id   = off_father_id,
+        repro_cycle = ifelse(
+          yoy_sex == "F",
+          sample.int(mating_periodicity, n_yoy, replace = TRUE),
+          NA_integer_
+        ),
+        fertile    = TRUE,
+        population = 1L
       )
 
-      # Identify viable superpods i.e., superpods with both a reproductive male and female
-      viable_superpods <- unique(data1$superpod[!data1$superpod %in% missing_superpods])
-
-      # Move all indvs in the missing superpods to a viable superpod
-      data1 <- data1 %>% mutate(
-        superpod = ifelse(
-          superpod %in% missing_superpods,
-          sample(viable_superpods, size = n(), replace = T),
-          superpod
-        )
-      )
-
-      # Double-check
-      # length(unique(data1$superpod[!data1$superpod %in% missing_superpods]))
-      # length(unique(data1$superpod))
-      # length(missing_superpods)
-
-      # Save vector of updated superpods
-      new_superpods <- data1 %>% dplyr::select(indv_name, superpod)
-
-      # Update superpods in mothers and fathers list
-      mothers2 <- mothers2 %>% rename(indv_name = mother, old_superpod = superpod) %>%
-        left_join(new_superpods, by = "indv_name") %>%
-        select(-old_superpod) %>%
-        rename(mother = indv_name)
-
-      fathers <- fathers %>% rename(old_superpod = superpod) %>%
-        left_join(new_superpods, by = "indv_name") %>%
-        select(-old_superpod)
-
-      # Double-check
-      # mothers2 %>% rename(indv_name = mother, old_superpod = superpod) %>%
-      #   left_join(new_superpods, by = "indv_name") %>%
-      #   filter(old_superpod %in% missing_superpods)
-
-}
-    # Create dataframe of mating events and generate initial offspring from each mating event
-    YOY_df <- create.YOY(mothers2, fathers, litters, year = v, process_by = process_by)
-
-    #Only bother assigning a sampling location for the years we're taking samples; otherwise just slows down code.
-    ## TO DO: ADD SAMPLE YEAR AND SITE INFORMATION THEN UNCOMMENT AND UPDATE BELOW
-
-    # if(v >= min(sample_years)){
-    #
-    #   # YOY from the same mother are assigned to the same sampling location
-    #   YOY_df <- YOY_df %>% group_by(mother, population) %>%
-    #     mutate(
-    #       sampling_location = sample(
-    #         sampling_locations,
-    #         1,
-    #         prob = c(dispersal_kernel(age = 0, birth_population = population[1])),
-    #         replace = TRUE)
-    #     ) %>%
-    #     ungroup()
-    #
-    #   #Pull out mothers and assign them the same sampling location as their offspring from this year
-    #   mother_sample_df <- YOY_df %>% select(indv_name = mother, sampling_location) %>% distinct()
-    #
-    #   mothers_df <- mother_sample_df %>% lazy_dt() %>%
-    #     left_join(mothers, by = "indv_name") %>%
-    #     select(-num_mates) %>%
-    #     as_tibble()
-    #
-    #   #Assign all other individuals assigned randomly
-    #   loopy_pop <- data1 %>%
-    #     lazy_dt() %>%
-    #     filter(!indv_name %chin% YOY_df$mother) %>%
-    #     mutate(
-    #       sampling_location = map2_chr(
-    #         age,
-    #         population,
-    #         ~sample(
-    #           sampling_locations,
-    #           1,
-    #           prob = c(dispersal_kernel(.x, .y)),
-    #           replace = TRUE
-    #         ))
-    #     ) %>%
-    #     as_tibble() %>%
-    #     bind_rows(YOY_df, mothers_df)
-    #
-    #
-    # } else {
-    #
-    #   # No need to assign sampling location if we're not sampling this year
-       loopy_pop <- bind_rows(data1, YOY_df)
-    #
-    # }
-
-       loopy_pop %>% count(age)
-
-    ###############################################`
-    ####---------------Sampling----------------####
-    ###############################################`
-    if(v %in% s_years){
-
-      if(sampling == "random"){
-
-        samples_df_temp <- loopy_pop %>%
-          slice_sample(n = sample_size) %>%
-          mutate(capture_year = v)
-
-
-      } else if(sampling == "superpod"){
-
-        # Step 1: choose superpods
-        chosen_pods <- loopy_pop %>%
-          distinct(superpod) %>%
-          slice_sample(n = length(sample_size)) %>%
-          mutate(n_to_sample = sample_size)
-
-        # Step 2: sample within each superpod
-        samples_df_pod <- loopy_pop %>%
-          inner_join(chosen_pods, by = "superpod")
-
-
-        # Split data by superpod (only chosen ones are present)
-        pod_list <- split(samples_df_pod, samples_df_pod$superpod)
-
-        # Named vector of sample sizes (superpod → n)
-        n_vec <- chosen_pods$n_to_sample
-        names(n_vec) <- chosen_pods$superpod
-
-        # Sample within each superpod
-        sampled_list <- Map(
-          function(df, n) df[sample.int(nrow(df), n), ],
-          pod_list,
-          n_vec
-        )
-
-        # Recombine into a single data frame
-        samples_df_temp <- dplyr::bind_rows(sampled_list)
-
+      # Offspring inherit their mother's pod and superpod membership.
+      if (use_pods) {
+        off_pods <- pop$pod[mother_rows[off_mother_idx]]
+        set(yoy, j = "pod",      value = off_pods)
+        set(yoy, j = "superpod", value = pod_to_sp[off_pods])
+        set(yoy, j = "pod_year", value = as.integer(yr))
       }
 
-      samples_df <- bind_rows(samples_df, samples_df_temp)
+      next_id <- next_id + n_yoy
+      pop <- rbindlist(list(pop, yoy), use.names = TRUE)
 
-    } # End sampling
+    } # end breeding
 
+    # ─── 5. Sampling ─────────────────────────────────────────────────────────
+    if (do_sampling && yr %in% s_years) {
+      sample_idx <- sample_idx + 1L
 
-    ###############################################`
-    ####-------------Save metrics--------------####
-    ###############################################`
+      if (sampling == "random") {
+        # Uniform random sample from the entire living population.
+        n_to_draw <- min(sample_size, nrow(pop))
+        draw_rows <- sample.int(nrow(pop), n_to_draw)
+        sampled   <- pop[draw_rows]
 
-    # Calculate number of produced offspring per mother and father this year
-    # moms_temp <- YOY_df %>%
-    #   count(mother, population, name = "num_off") %>%
-    #   mutate(
-    #     indv_name = mother,
-    #     population,
-    #     num_off,
-    #     year = v,
-    #     which_parent = "mother",
-    #     .keep = "none"
-    #   )
-    #
-    # dads_temp <- YOY_df %>%
-    #   count(father, population, name = "num_off") %>%
-    #   mutate(
-    #     indv_name = father,
-    #     population,
-    #     num_off,
-    #     year = v,
-    #     which_parent = "father",
-    #     .keep = "none"
-    #   )
+      } else if (sampling == "superpod") {
+        # Choose random superpods, then sample within each.
+        # sample_size is a vector: one element per superpod to sample.
+        n_pods_to_sample <- length(sample_size)
+        chosen_sps <- sample(unique(pop$superpod), n_pods_to_sample)
 
-    # Add to the tibble of offspring distribution - can use to check if/whether some indvs are reproducing much more
-    #   parents.tibble <- rbind(parents.tibble, moms.temp, dads.temp)
+        sampled_list_inner <- vector("list", n_pods_to_sample)
+        for (k in seq_len(n_pods_to_sample)) {
+          sp_pop  <- pop[pop$superpod == chosen_sps[k]]
+          n_draw  <- min(sample_size[k], nrow(sp_pop))
+          sampled_list_inner[[k]] <- sp_pop[sample.int(nrow(sp_pop), n_draw)]
+        }
+        sampled <- rbindlist(sampled_list_inner)
+      }
 
-    # Print info about the population to the console
-    message(paste("\nyear", v, " ", names(table(loopy_pop$population)),
-              "N_mothers=", table(moms_temp$population),
-              "N_fathers=", table(dads_temp$population),
-              "\nN_pups=", table(YOY_df$population),
-              "\nTotal N= ", table(loopy_pop$population), sep=" "))
-
-    # Save the population size by age and sex
-    pop_size_temp <- loopy_pop %>% dplyr::count(population, sex, age) %>%
-      mutate(year = v)
-
-    pop_size <- bind_rows(pop_size, pop_size_temp)
-
-    # For checking that male maturity isn't changing over the simulation (this was a bug earlier) ...
-    # plot.list[[v]] <- data1 %>% dplyr::filter(sex=='M') %>%
-    #   mutate(unif = runif(n()),
-    #          repro = case_when(
-    #            unif < repro_prob ~ "yes",
-    #            .default = "no"
-    #          )) %>%
-    #   gghistogram(x = c("repro_prob")) +
-    #   ggtitle(paste0("Year ", v))
-
-    # When I figure out how to efficiently store this info for a large population, then I will uncomment this.
-    #loopy.list[[v]] <- loopy.pop
-
-  } # End loop over sim years
-
-  # Label the list elements with the year
-  # names(loopy.list) <- paste0("year.end.pop.", seq(1:(burn.in + Num.years)), "_iteration_", iter)
-
-
-  return(invisible(list(pop_size, samples_df)))
+      set(sampled, j = "capture_year", value = as.integer(yr))
+      sample_list[[sample_idx]] <- sampled
     }
+
+    # ─── 6. Record population metrics ────────────────────────────────────────
+    # Aggregate counts by sex and age for ground-truthing CKMR estimates.
+    yr_counts <- pop[, .N, by = .(sex, age)]
+    set(yr_counts, j = "year", value = as.integer(yr))
+    pop_counts[[yr]] <- yr_counts
+
+    # Progress message every 10 years (or first/last year)
+    if (yr == 1L || yr == num_years || yr %% 10L == 0L) {
+      message(sprintf(
+        "  year %4d  |  N = %s", yr, format(nrow(pop), big.mark = ",")
+      ))
+    }
+
+  } # end main loop
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # COMPILE AND RETURN OUTPUTS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  pop_summary <- rbindlist(pop_counts)
+
+  if (do_sampling) {
+    samples_df <- rbindlist(sample_list)
+  } else {
+    # Return an empty table with the correct schema so downstream code doesn't break
+    samples_df <- data.table(
+      id = integer(), birth_year = integer(), age = integer(),
+      sex = character(), mother_id = integer(), father_id = integer(),
+      capture_year = integer(), population = integer()
+    )
+  }
+
+  message(sprintf(
+    "Simulation complete: %d years, final N = %s, %d individuals sampled.",
+    num_years, format(nrow(pop), big.mark = ","), nrow(samples_df)
+  ))
+
+  invisible(list(
+    samples     = samples_df,
+    pop_summary = pop_summary
+  ))
+}

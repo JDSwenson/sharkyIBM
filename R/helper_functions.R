@@ -7,7 +7,10 @@
 # Optimized run time - March 25, 2026
 
 ######################## Create initial YOY dataframe ########################
-create.YOY.init <- function(mothers2, fathers, litters, year = 0, process_by = "age"){
+create.YOY.init <- function(mothers2, fathers, litters, year = 0, process_by = "age",
+                            popstructure = "panmictic", female_fraction = 0.5,
+                            mating_periodicity = 1, infertility = 0,
+                            stickiness = NULL, growth_params = NULL){
 
   # The code below splits the litter size - stored in litters - among separate "mating events" - the number of rows in mothers2 - based on draws from a multinomial distribution. THEN a father is assigned to all mating events that produce at least one offspring. This rectifies the foundational issue we had previously where fathers could be assigned to a mating event that produces zero offspring, which would have been fine, except fathers are also randomly assigned to females. Collectively, this meant that some males were not assigned to females and others were assigned to females but produced zero offspring, resulting in two moments to lose successful male breeders. The first filter is expected, but the second was unintentional. We want to be able to control this better in the future. The process below fixes this.
 
@@ -144,7 +147,11 @@ create.YOY.init <- function(mothers2, fathers, litters, year = 0, process_by = "
 
 ######################## Create YOY during loop  ########################
 
-create.YOY <- function(mothers2, fathers, litters, year, process_by = "age"){
+create.YOY <- function(mothers2, fathers, litters, year, process_by = "age",
+                       popstructure = "panmictic", female_fraction = 0.5,
+                       mating_periodicity = 1, infertility = 0,
+                       stickiness = NULL, growth_params = NULL,
+                       male_behavior = NULL){
 
   # The code below splits the litter size - stored in litters - among separate "mating events" - the number of rows in mothers2 - based on draws from a multinomial distribution. THEN a father is assigned to all mating events that produce at least one offspring. This rectifies the foundational issue we had previously where fathers could be assigned to a mating event that produces zero offspring, which would have been fine, except fathers are also randomly assigned to females. Collectively, this meant that some males were not assigned to females and others were assigned to females but produced zero offspring, resulting in two moments to lose successful male breeders. The first filter is expected, but the second was unintentional. We want to be able to control this better in the future. The process below fixes this.
 
@@ -209,7 +216,14 @@ create.YOY <- function(mothers2, fathers, litters, year, process_by = "age"){
         ungroup() %>%
         tidyr::uncount(litter_per_mating)
 
-}
+  } else {
+
+      # Panmictic without pod structure: any mature male can mate with any female
+      mating_events <- mating_events_temp %>%
+        mutate(father = sample(fathers$indv_name, size = n(), replace = TRUE)) %>%
+        tidyr::uncount(litter_per_mating)
+
+  }
 }
   # How many instances of mating?
   n <- nrow(mating_events)
