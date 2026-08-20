@@ -2,109 +2,44 @@
 % Please edit documentation in R/simulate_population.R
 \name{simulate.pop}
 \alias{simulate.pop}
-\title{Simulate age-structured shark populations and sampling}
+\title{Simulate an age-structured population and store snapshots for sampling}
 \usage{
-\method{simulate}{pop}(
-  max_age,
-  survival,
-  pop_size,
-  mating_periodicity,
-  maturity_age,
-  litter_size,
-  num_mates,
-  num_years,
-  osr = 0.5,
-  infertility = 0,
-  F_by_age = F,
-  movement_array = NULL,
-  popstructure = "panmictic",
-  stickiness = NULL,
-  sticky_age = NULL,
-  sticky_interval = NULL,
-  superpod_size = NULL,
-  male_behavior = NULL,
-  sampling = "random",
-  sample_size = NULL,
-  sample_years = NULL,
-  growth_params = NULL,
-  process_by = "age"
-)
+\method{simulate}{pop}(sim_config, num_years, sample_years = NULL)
 }
 \arguments{
-\item{num_mates}{Integer vector or scalar. Number of mates per mother (sampled with replacement).}
+\item{sim_config}{List returned by \code{calculate.s0()}.}
 
-\item{num_years}{Integer (>= 1). Number of analysis years after burn-in.}
+\item{num_years}{Integer. Simulation years after the burn-in.}
 
-\item{movement_array}{Three-dimensional array of age-based movement probabilities to locations where individual animals will be sampled. Dimensions should be [age, sampling_location, population]. In other words, each population should have its own matrix, ordered the same as the populations. The array should include age 0 individuals, so the number of rows should be max_age+1, and the movement probability for age a should be in the row a+1. For example, the probability to find age 6 individuals from population 1 at sampling location 4 would be specified in the movement_array [7, 4, 1].}
-
-\item{popstructure}{A character value, specified as either "panmictic" (default) or "structured". "panmictic" means that all individuals across all populations will freely mate with one another; "structured" means that individuals will only mate within their population.}
-
-\item{stickiness}{Double, between 0 and 1. Specifies the degree of "stickiness" among familial groups. A value of 1 means that each mother-centric family group will remain together as a pod throughout their lives; a value of 0 means that pods will be randomly shuffled each year composed of random individuals.  If this parameter is defined, then the "superpod_size" parameter must be set as well.}
-
-\item{sticky_age}{Integer. This is the age at which the stickiness parameter will be applied. Prior to this age, individuals will remain in the same pod they were born into. Setting sticky_age = max_age will mean that individuals will remain in the same pod they're born into throughout their lives, similar to stickiness = 1.}
-
-\item{sticky_interval}{Integer. If 0 < stickiness < 1, this is the number of years individuals will shuffle among pods according to the probability defined in the stickiness parameter e.g., if stickiness = 0 and sticky_interval = 2, then every 2 years, each individual above sticky_age will change pods.}
-
-\item{superpod_size}{Integer. How many pods will be combined into a superpod? We do not require this parameter to be a multiple of the number of pods, so in most cases there will be one superpod that combines fewer pods than defined here.}
+\item{sample_years}{Integer (scalar, vector, or NULL).}
 }
 \value{
-A list with two elements:
-\itemize{
-\item \code{pop.size}: data frame/tibble of population metrics by year and population.
-\item \code{samples.df}: data frame/tibble of sampled individuals (may be empty if no sampling occurs).
+A named list (returned invisibly):
+\describe{
+\item{pop_summary}{data.table: \code{year, sex, age, N} for all years.}
+\item{snapshots}{Named list of data.tables at snapshot years.}
+\item{pod_to_sp}{Integer vector mapping pod → superpod.}
+\item{sim_config}{Passed through for \code{sample.pop()}.}
 }
-The list is returned invisibly.
 }
 \description{
-Runs a forward-time, age-structured simulation across one or more populations,
-including reproduction, growth, and survival, with optional sampling of
-individuals in specified years. Returns yearly population metrics and sampled
-individuals suitable for downstream analysis.
+Runs a forward-time, individual-based simulation with full parentage tracking
+and a Markov breeding cycle.  The simulation runs a burn-in of \code{max_age}
+years (to flush founders), then \code{num_years} additional years.  At
+user-specified years, a snapshot of the full living population is stored and
+returned for use by \code{sample.pop()}.
 }
 \details{
-This function orchestrates initialization, breeding, growth, survival, and optional
-sampling of individuals. It relies on several helper functions (e.g., for offspring
-generation, reproduction probabilities, dispersal, and sampling) that are defined
-elsewhere in the package.
-
-The return value is a list with population metrics per year and any sampled
-individuals.
+\strong{Markov breeding cycle:} Each mature female carries a breeding state:
+S1 (pregnant), S2 (with dependent calf), or S3 (resting).  Each year,
+states transition probabilistically:
+\itemize{
+\item S1 → S2 (probability 1): pregnant female gives birth.
+\item S2 → S1 (probability \code{psi_2}): conceive while nursing.
+\item S2 → S3 (probability \code{1 - psi_2}): wean calf, rest.
+\item S3 → S1 (probability \code{psi_3}): conceive from resting.
+\item S3 → S3 (probability \code{1 - psi_3}): remain resting.
 }
-\examples{
-\dontrun{
-# Minimal scaffold showing inputs (uses tiny sizes and fake tables)
-init_pop_size <- c(MX = 10, ES = 8, EC = 12)
-Nages <- matrix(c(3,4,3,
-                  4,2,4,
-                  3,2,5), nrow = 3, byrow = TRUE)
-colnames(Nages) <- names(init_pop_size)
-
-age_length_df <- tibble::tibble(
-  age = 0:10,
-  mean_length = seq(80, 130, length.out = 11),
-  age_length_sd = rep(8, 11)
-)
-
-out <- simulate.pop(
-  init_pop_size = init_pop_size,
-  init_prop_female = 0.5,
-  Nages = Nages,
-  mating_periodicity = 1,
-  repro_age = 5,
-  YOY_survival = 0.7,
-  juvenile_survival = 0.85,
-  adult_survival = 0.92,
-  max_age = 20,
-  num_mates = 1:2,
-  ff = list(),
-  burn_in = 0,
-  num_years = 1,
-  age_length_df = age_length_df
-)
-}
-
-}
-\seealso{
-Helper functions you will define and document separately, e.g.,
-offspring generation and sampling utilities.
+Offspring are created when a female transitions S1 → S2.  Newly mature
+females enter the cycle at S3.
 }

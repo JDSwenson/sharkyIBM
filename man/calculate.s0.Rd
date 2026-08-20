@@ -2,25 +2,91 @@
 % Please edit documentation in R/calculate_s0.R
 \name{calculate.s0}
 \alias{calculate.s0}
-\title{Return to this script after finalizing the simulate_population.R script. Want to emulate simualte.pop exactly, but calculate s0, so I'll just manually figure out s0 values that work until I get a reasonable version of the script running.}
+\title{Find age-0 survival (s0) that stabilises an age-structured population}
 \usage{
 calculate.s0(
-  input_data,
-  num_mates,
-  num_years,
-  movement_array = NULL,
-  popstructure = "panmictic",
-  stickiness = NULL,
-  sticky_age = NULL,
-  sticky_interval = NULL,
+  max_age,
+  survival,
+  pop_size,
+  maturity_age,
+  litter_size,
+  psi_2,
+  psi_3,
+  num_mates = 1L,
+  female_fraction = 0.5,
+  infertility = 0,
+  pod_size = NULL,
   superpod_size = NULL,
+  stickiness_year = NULL,
   male_behavior = NULL,
-  sampling = "random",
-  sample_size = NULL,
-  sample_years = NULL,
-  process_by = "age"
+  weaning_age = NULL,
+  check_interval = 5L,
+  growth_tol = 0.005,
+  stable_required = 3L,
+  max_windows = 100L
 )
 }
+\arguments{
+\item{max_age}{Integer. Maximum age in the population.}
+
+\item{survival}{Numeric vector of length \code{max_age + 1}. Annual survival
+probabilities for ages 0 through \code{max_age}. The age-0 value is a
+placeholder; it will be replaced by the optimised estimate.}
+
+\item{pop_size}{Integer. Total starting population size.}
+
+\item{maturity_age}{Integer. Age at first reproduction (knife-edged).}
+
+\item{litter_size}{Numeric. Mean litter size per breeding female.}
+
+\item{psi_2}{Numeric in [0, 1]. Probability that a female with a dependent
+calf (breeding state S2) becomes pregnant again the following year.
+Low values (~0.05–0.15) mean females rarely conceive while nursing.}
+
+\item{psi_3}{Numeric in [0, 1]. Probability that a resting female
+(breeding state S3) becomes pregnant the following year.  Controls how
+quickly females re-enter the breeding cycle after weaning.}
+
+\item{num_mates}{Integer vector or scalar. Number of mates per female.
+Not used in \code{calculate.s0} but captured for pass-through.}
+
+\item{female_fraction}{Numeric in (0, 1). Proportion female offspring.}
+
+\item{infertility}{Reserved for future use.}
+
+\item{pod_size}{Integer or NULL. Target individuals per pod.}
+
+\item{superpod_size}{Integer or NULL. Pods per superpod.}
+
+\item{stickiness_year}{Numeric (scalar or length-2) or NULL.
+Between-year superpod fidelity. Sex-specific via \code{c(female, male)}.}
+
+\item{male_behavior}{Character or NULL. \code{"random"} or
+\code{"strong_bull"}.}
+
+\item{weaning_age}{Integer or NULL. Age at independence from mother.}
+
+\item{check_interval}{Integer. Years between growth assessments. Default 5.}
+
+\item{growth_tol}{Numeric. Stability tolerance. Default 0.005.}
+
+\item{stable_required}{Integer. Consecutive stable windows needed. Default 3.}
+
+\item{max_windows}{Integer. Safety cap on windows. Default 100.}
+}
+\value{
+A list (returned invisibly) with calibration results and all shared
+parameters needed by \code{simulate.pop}.
+}
 \description{
-Return to this script after finalizing the simulate_population.R script. Want to emulate simualte.pop exactly, but calculate s0, so I'll just manually figure out s0 values that work until I get a reasonable version of the script running.
+Uses a two-phase approach:
+}
+\details{
+\enumerate{
+\item \strong{Leslie matrix} — build a deterministic Leslie matrix from the supplied
+life-history parameters and solve analytically for the s0 that gives
+\eqn{\lambda = 1}.
+\item \strong{Iterative simulation} — run the stochastic individual-based simulation
+forward in time, adjusting s0 via bisection until convergence.
+}
 }
