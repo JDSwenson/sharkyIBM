@@ -2,7 +2,6 @@
 
 S3method(simulate,pop)
 export(calculate.s0)
-export(create.pop.data)
 export(sample.pop)
 importFrom(data.table,copy)
 importFrom(data.table,data.table)

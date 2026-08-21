@@ -7,39 +7,47 @@
 \method{simulate}{pop}(sim_config, num_years, sample_years = NULL)
 }
 \arguments{
-\item{sim_config}{List returned by \code{calculate.s0()}.}
+\item{sim_config}{List returned by \code{calculate.s0()}.  Contains all
+life-history and social structure parameters plus the calibrated survival
+vector.}
 
-\item{num_years}{Integer. Simulation years after the burn-in.}
+\item{num_years}{Integer. Simulation years to run after the burn-in.}
 
-\item{sample_years}{Integer (scalar, vector, or NULL).}
+\item{sample_years}{Integer (scalar, vector, or NULL).
+\itemize{
+\item Scalar: store snapshots for the last \code{sample_years} years of
+the simulation.
+\item Vector: store snapshots at exactly these year indices (1-indexed,
+counting from the start of burn-in).
+\item NULL: no snapshots (but then why are you running this?).
+}}
 }
 \value{
 A named list (returned invisibly):
 \describe{
-\item{pop_summary}{data.table: \code{year, sex, age, N} for all years.}
-\item{snapshots}{Named list of data.tables at snapshot years.}
-\item{pod_to_sp}{Integer vector mapping pod → superpod.}
+\item{pop_summary}{data.table: sex-specific numbers-at-age for all simulation years, including burn-in.}
+\item{snapshots}{Named list of data.tables containing metadata for every simulated individual in each year specified by \code{sample.years.}
+\item{pod_to_sp}{Integer vector mapping pod -> superpod.} This is used in \code{sample.pop} to shuffle animals around between sets and trips.
 \item{sim_config}{Passed through for \code{sample.pop()}.}
 }
 }
 \description{
 Runs a forward-time, individual-based simulation with full parentage tracking
-and a Markov breeding cycle.  The simulation runs a burn-in of \code{max_age}
-years (to flush founders), then \code{num_years} additional years.  At
-user-specified years, a snapshot of the full living population is stored and
-returned for use by \code{sample.pop()}.
+and a Markov breeding cycle.  The simulation runs a burn-in of
+\code{2 * max_age} years (to flush founders and let the age structure
+equilibrate), after which \code{num_years} additional years are run. A snapshot of the full living population for each year specified by \code{sample_years} will be stored and returned for use by \code{sample.pop()}. This function is meant to be run after \code{calculate.s0} and prior to \code{sample.pop}.
 }
 \details{
 \strong{Markov breeding cycle:} Each mature female carries a breeding state:
 S1 (pregnant), S2 (with dependent calf), or S3 (resting).  Each year,
 states transition probabilistically:
 \itemize{
-\item S1 → S2 (probability 1): pregnant female gives birth.
-\item S2 → S1 (probability \code{psi_2}): conceive while nursing.
-\item S2 → S3 (probability \code{1 - psi_2}): wean calf, rest.
-\item S3 → S1 (probability \code{psi_3}): conceive from resting.
-\item S3 → S3 (probability \code{1 - psi_3}): remain resting.
+\item S1 -> S2 (probability 1): pregnant female gives birth.
+\item S2 -> S1 (probability \code{psi_2}): conceive while nursing.
+\item S2 -> S3 (probability \code{1 - psi_2}): wean calf, rest.
+\item S3 -> S1 (probability \code{psi_3}): conceive from resting.
+\item S3 -> S3 (probability \code{1 - psi_3}): remain resting.
 }
-Offspring are created when a female transitions S1 → S2.  Newly mature
+Offspring are created when a female transitions S1 -> S2.  Newly mature
 females enter the cycle at S3.
 }

@@ -31,16 +31,13 @@ depends on \code{sample_per}.}
 individuals per set) or \code{"trip"} (sample \code{sample_size}
 individuals total per trip, distributed across sets).}
 
-\item{sampling}{Character. \code{"random"} (uniform random from the full
+\item{sampling}{Character. Determines how sampling occurs during each "trip". Options are \code{"random"} (uniform random from the full
 population) or \code{"superpod"} (sample from a single randomly chosen
-superpod per set).}
+superpod per trip). The latter is meant to emulate a purse seine vessel that encounters a single superpod and follows that same superpod throughout the trip.}
 
-\item{stickiness_set}{Numeric (scalar or length-2). Probability of staying
-in the same superpod between consecutive sets within a trip.  Scalar =
-same for both sexes; \code{c(female, male)} for sex-specific rates.}
+\item{stickiness_set}{Numeric (scalar or length-2 vector), bounded (0,1). Probability of staying in the same superpod between consecutive sets within a trip.  Scalar = same for both sexes; \code{c(female, male)} for sex-specific rates. Default 1 (no reshuffling between sets).}
 
-\item{stickiness_trip}{Numeric (scalar or length-2). Probability of staying
-in the same superpod between consecutive trips within a year.}
+\item{stickiness_trip}{Numeric (scalar or length-2 vector), bounded (0,1). Probability of staying in the same superpod between consecutive trips within a year. Default 1 (no reshuffling between trips).}
 
 \item{superpod_pool}{NULL or a list of integer vectors.  Controls which
 superpods each trip can encounter.
@@ -55,8 +52,8 @@ southern trips).
 \value{
 A \code{data.table} of sampled individuals with columns:
 \code{id}, \code{birth_year}, \code{age}, \code{sex}, \code{mother_id},
-\code{father_id}, \code{population}, \code{pod}, \code{superpod},
-\code{year}, \code{trip}, \code{set}.
+\code{father_id}, \code{population}, \code{year}, \code{trip}, \code{set},
+and (if pods are used) \code{pod}, \code{superpod}.
 
 The same individual may appear multiple times if caught in different sets.
 Deduplicate by \code{id} (within or across years) to count unique samples.
@@ -65,6 +62,6 @@ Deduplicate by \code{id} (within or across years) to count unique samples.
 Takes population snapshots produced by \code{simulate.pop()} and applies a
 sampling design based on purse seine operations: multiple trips per year,
 multiple sets per trip, with social reshuffling between sets and trips.
-This function is cheap to run and can be called repeatedly with different
-sampling parameters on the same simulation output.
+This function operates on stored snapshots and is cheap to run — it can be
+called repeatedly with different sampling parameters without re-running the full population simulation.
 }
