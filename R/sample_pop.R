@@ -324,7 +324,7 @@ sample.pop <- function(sim_output,
   samples_df  <- rbindlist(all_samples, use.names = TRUE)
 
   # Select only the columns relevant for downstream CKMR analysis.
-  # Internal columns like breed_state, mat_age, and fertile are dropped.
+  # Internal columns like breed_state, mat_age, fertile, and calf_id are dropped.
   keep_cols <- c("id", "birth_year", "age", "sex", "mother_id", "father_id",
                  "population", "year", "trip", "set")
   if (use_pods) keep_cols <- c(keep_cols, "pod", "superpod")

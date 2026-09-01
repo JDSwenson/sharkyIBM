@@ -1,3 +1,23 @@
-.Rproj.user
-.posit/
+# RStudio / R session artifacts
+.Rproj.user/
 .Rhistory
+.RData
+.Ruserdata
+
+# R CMD check / build output
+*.Rcheck/
+*.tar.gz
+*.Rout
+
+# Posit Assistant / other AI assistant local files
+.posit/
+.positai
+.claude
+
+# Conversation exports (large, not meant for source control)
+conversation-export.html
+conversation-export.md
+
+# OS-specific files
+.DS_Store
+Thumbs.db
