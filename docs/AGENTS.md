@@ -1,6 +1,6 @@
 # sharkyIBM Project — Conversation Summary
 
-**Last updated:** Tuesday, September 1, 2026
+**Last updated:** Wednesday, September 2, 2026
 **Project:** Individual-Based Population Simulation for Close-Kin Mark–Recapture (CKMR) Analysis
 **Species:** Pantropical spotted dolphins, eastern spinner dolphins
 
@@ -101,7 +101,8 @@ This is a dolphin population simulation package (`sharkyIBM` — placeholder nam
 - **Logit-scale shift** preserves the ratio between psi_2 and psi_3 (odds ratio invariant to depletion), same approach as the dolphin_population_model.qmd assessment model
 - **K_1plus** = 1+ component of carrying capacity (age ≥ 1), derived from stable age distribution. Excludes age-0 to avoid feedback (newborn count is a direct function of breeding rate)
 - **User-supplied psi_2/psi_3** are reference values; the calibration adjusts them via theta_shift. Adjusted values stored as `psi_2_K`, `psi_3_K` in the config
-- **DD parameters:** `z_pt` (Pella-Tomlinson shape, default 2.39), `dd_max` (max logit shift, required when DD=TRUE)
+- **DD parameters:** `z_pt` (Pella-Tomlinson shape, default 2.39), `dd_max` (max logit shift — **recommended: anchor via `target_interval` instead of supplying directly**)
+- **Anchored dd_max (Sep 2, recommended):** Instead of supplying `dd_max` directly, supply `target_interval` (observed calving interval in years, e.g., 2.84) and `target_depletion` (depletion at which that interval was observed, e.g., 0.3). After theta_shift calibration, `uniroot()` solves for the `dd_max` that reproduces the target interval at the reference depletion. This is far more defensible than guessing a logit-scale shift, which has no biologically meaningful default and can easily be too weak for a given life history. Replicates the anchoring approach from `dolphin_population_model.qmd`. When `dd_max` is supplied directly (intended only for sensitivity analyses or theoretical runs), a message reminds the user to consider `target_interval` instead.
 - **DD NOT active during calibration** — calibration simulates at K where Δ = 0; DD only activates in `simulate.pop()`
 
 ### 10. Pod / Superpod Social Structure
@@ -144,6 +145,7 @@ create.stable.pop(
   pod_size = NULL, superpod_size = NULL, stickiness_year = NULL,
   male_behavior = NULL, max_females = NULL, weaning_age = NULL,
   density_dependence = FALSE, z_pt = 2.39, dd_max = NULL,
+  target_interval = NULL, target_depletion = 0.3,
   check_interval = 10L, growth_tol = 0.001, stable_required = 5L,
   max_windows = 100L
 )
@@ -151,9 +153,11 @@ create.stable.pop(
 
 **Output (DD=FALSE):** List with calibration results (`s0`, `survival`, `s0_leslie`, `final_N`, `years_simulated`, `density_dependence = FALSE`) plus all shared parameters (including `psi_nurse`, `psi_rest`).
 
-**Output (DD=TRUE):** List with calibration results (`s0` [user-supplied], `survival` [unchanged], `s0_leslie = NA`, `theta_shift`, `theta_shift_leslie`, `psi_nurse_K`, `psi_rest_K`, `final_N`, `years_simulated`, `density_dependence = TRUE`, `z_pt`, `dd_max`, `K_1plus`) plus all shared parameters.
+**Output (DD=TRUE):** List with calibration results (`s0` [user-supplied], `survival` [unchanged], `s0_leslie = NA`, `theta_shift`, `theta_shift_leslie`, `psi_nurse_K`, `psi_rest_K`, `final_N`, `years_simulated`, `density_dependence = TRUE`, `z_pt`, `dd_max`, `target_interval`, `target_depletion`, `K_1plus`) plus all shared parameters. When `target_interval` is used, `dd_max` is the solved value; `target_interval`/`target_depletion` are NULL when `dd_max` was supplied directly.
 
-**Input validation:** Checks types, lengths, ranges, and consistency (e.g., `pod_size` requires `superpod_size`, ogive must be non-decreasing CDF, DD requires dd_max and non-zero psi values, etc.).
+**Input validation:** Checks types, lengths, ranges, and consistency (e.g., `pod_size` requires `superpod_size`, ogive must be non-decreasing CDF, etc.).
+
+**Note on dd_max and target_interval:** When `density_dependence = TRUE`, **use `target_interval` / `target_depletion` (recommended)** to anchor compensation strength to an observed calving interval, rather than supplying `dd_max` directly. Direct `dd_max` supply has no biologically meaningful default and can easily be under-specified for a given life history. If `dd_max` is supplied, a message is printed reminding the user to consider the anchored approach. The only intended use case for direct `dd_max` is sensitivity analysis (sweeping compensation strength) or theoretical runs.
 
 ### `simulate.pop()`
 
@@ -224,6 +228,7 @@ M[ages >= 28] <- M[ages >= 28] +
          (exp(0.3 * (40 - 28)) - 1)
 surv_siler <- exp(-M)
 
+## dd_max supplied directly:
 result_dd <- create.stable.pop(
   max_age = 40, survival = surv_siler,
   pop_size = 50000,
@@ -235,6 +240,21 @@ result_dd <- create.stable.pop(
   male_behavior = "random", weaning_age = 2L,
   density_dependence = TRUE, z_pt = 2.39, dd_max = 3.0
 )
+
+## OR anchor dd_max to an observed calving interval:
+result_dd <- create.stable.pop(
+  max_age = 40, survival = surv_siler,
+  pop_size = 50000,
+  maturity_age = 9L,
+  litter_size = 1,
+  psi_nurse = 0.1, psi_rest = 0.7,
+  pod_size = 20, superpod_size = 10,
+  stickiness_year = 0.9,
+  male_behavior = "random", weaning_age = 2L,
+  density_dependence = TRUE, z_pt = 2.39,
+  target_interval = 2.84, target_depletion = 0.3
+)
+# result_dd$dd_max contains the solved value
 
 sim <- simulate.pop(result_dd, num_years = 50, sample_years = 5)
 
@@ -298,6 +318,15 @@ unique_samples <- samples[!duplicated(id)]
 ✓ **sample.pop() compatibility:** Internal columns (s2_year) excluded from samples; calf_id excluded via keep_cols whitelist
 ✓ **Backward compatibility note:** `psi_2`/`psi_3` parameters are REMOVED; existing code must switch to `psi_nurse`/`psi_rest`
 
+### Anchored dd_max (Sep 2)
+✓ **target_interval anchoring (recommended):** `create.stable.pop()` accepts `target_interval` + `target_depletion` as the primary interface; solves for dd_max via uniroot after theta_shift calibration
+✓ **Exact reproduction:** dd_max = 2.575 reproduces 2.84-yr calving interval at D=0.3 (verified analytically)
+✓ **Direct dd_max discouraged:** Supplying `dd_max` directly still works but now prints a message recommending the anchored path instead. Direct `dd_max` supply is intended only for sensitivity analyses or theoretical runs without empirical data.
+✓ **Documentation updated:** `@param` and `@details` in `create_stable_pop.R` and `simulate_population.R` now prominently recommend `target_interval` over direct `dd_max`, explaining that direct logit-scale shifts have no biologically meaningful default and placeholder values can be far too weak for a given life history.
+✓ **Validation:** Both-supplied error, neither-supplied error, floor check (< 2 yr), ceiling check (>= interval at K) all produce clear error messages
+✓ **End-to-end verified:** Full pipeline tested (create.stable.pop with target_interval → simulate.pop → sample.pop); depletion stays ~1.0, zero founders in samples, all superpod pools enforced correctly
+✓ **devtools::check() clean:** 0 errors, 0 warnings, 1 note
+
 ### Density dependence (Sep 1)
 ✓ **Renamed function:** `calculate.s0()` → `create.stable.pop()`, file `calculate_s0.R` → `create_stable_pop.R`
 ✓ **Dual-mode design:** `density_dependence = FALSE` bisects s0 (original); `density_dependence = TRUE` bisects theta_shift on psi_2/psi_3 logits
@@ -310,6 +339,60 @@ unique_samples <- samples[!duplicated(id)]
 ✓ **sample.pop() compatibility:** Works with DD simulation output unchanged
 
 ---
+
+## Package Infrastructure & Documentation (Sep 2)
+
+### Citations and References
+✓ **inst/CITATION** — Package-level citations (installed, accessed via `citation("sharkyIBM")`)
+✓ **inst/REFERENCES.bib** — Full BibTeX bibliography with 10 key references
+✓ **Roxygen2 @references tags** — Added to all three functions (create.stable.pop, simulate.pop, sample.pop)
+✓ **CITATION_GUIDE.md** — Developer guide for maintaining citations
+✓ **devtools::check() clean** — 0 errors, 0 warnings, 0 notes
+
+Key references included:
+- Pella & Tomlinson (1973) — density dependence mechanism
+- Caswell (2001) — Leslie matrix framework
+- Hoyle & Maunder (2004) — Bayesian stock assessment
+- Barlow & Boveng (1991) — marine mammal mortality
+
+### Code Generality Assessment (Sep 2)
+
+**Current status: 60-70% generic; 30-40% cetacean-specific**
+
+Generic components:
+- Age structure, survival curves, maturity ogives
+- Litter size (handles 1 to N offspring)
+- Sex ratio, infertility, mating systems
+- Social structure (pods/superpods)
+- Sampling hierarchy (trips/sets/stickiness)
+- Density dependence (Pella-Tomlinson)
+
+Cetacean-specific components:
+- Lactational suppression (psi_nurse vs psi_rest)
+- S2 state definition (with dependent calf)
+- Calf-dependent conception rates
+- Single tracked calf per mother
+
+Species expansion scenarios:
+- **Tier 1 (minimal):** Ungulates, other cetaceans (~0 code changes)
+- **Tier 2 (moderate):** Primates, some terrestrial mammals (~10-30 line changes)
+- **Tier 3 (major):** Rodents, polyestrous species (~50-100 line refactor)
+- **Tier 4 (architectural):** Birds, reptiles (substantial redesign needed)
+
+See `SPECIES_GENERALIZATION_TODO.md` for detailed roadmap.
+
+### Conceptual Explanations Documented (Sep 2)
+
+Deep dive explanations provided in conversation:
+- **Automatic differentiation** — forward/backward pass, chain rule, why it breaks
+- **Eigen decomposition** — why it breaks AD; fixed-iteration power method alternative
+- **Leslie matrix** — foundation for age-structured models; stable age distribution
+- **Pella-Tomlinson compensation** — depletion-dependent conception scaling on logit scale
+- **Breeding cycle architecture** — S1/S2/S3 states; calf-survival coupling; variable weaning_age
+- **Individual aging in simulations** — how max_age is enforced; when animals are removed
+- **Litter size generality** — code handles arbitrary litter sizes; dolphins use litter_size=1
+- **Log-odds parameterization** — why rho (log odds of nursing vs rest) is better than probability ratio
+- **MNPL and Pella-Tomlinson z** — IWC convention: z=2.39 sets MNPL at 0.6K
 
 ## Known Issues / Open Questions
 

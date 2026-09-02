@@ -65,3 +65,118 @@ multiple sets per trip, with social reshuffling between sets and trips.
 This function operates on stored snapshots and is cheap to run — it can be
 called repeatedly with different sampling parameters without re-running the full population simulation.
 }
+\details{
+\subsection{Hierarchical Sampling Structure}{
+
+The function implements a three-level sampling hierarchy mimicking purse seine
+operations:
+\itemize{
+\item \strong{Year}: All snapshots in the requested year(s) are processed.
+\item \strong{Trip} (n_trips per year): Each trip represents a deployment of a
+sampling vessel.
+\item \strong{Set} (n_sets per trip): Each set represents a single purse seine
+operation during a trip.
+}
+
+Within each trip, a single superpod is encountered (or a random subset if
+\code{stickiness_trip} < 1.0 reshuffles between trips). Within each set, the
+same superpod is encountered; however, \code{stickiness_set} controls whether
+individuals remain in that superpod between sets.
+}
+
+\subsection{Sampling Modes}{
+
+\strong{sampling = "random"}: At each set, a sample is drawn uniformly at random
+from the entire living population (across all superpods). This is fast and
+useful for baseline comparisons but unrealistic for marine mammal sampling.
+
+\strong{sampling = "superpod"}: At the start of each trip, a superpod is chosen
+(uniformly at random from \code{superpod_pool} if provided, or all available
+superpods otherwise). Sampling within that trip occurs only from that superpod
+and its nearby communities. At the start of each set within the trip,
+\code{stickiness_set} determines whether the catch remains in the same superpod
+or moves to a different one. This realistically models social structure and
+catch patterns.
+}
+
+\subsection{Stickiness Parameters}{
+
+\strong{stickiness_trip}: Between-trip fidelity within a year (0--1). Each trip
+starts with a randomly selected superpod from \code{superpod_pool}.  Between
+trips, each individual in the current superpod remains with probability
+\code{stickiness_trip}; those that move (probability 1 - stickiness_trip)
+emigrate to a different superpod chosen uniformly at random. Can be scalar
+(both sexes) or sex-specific \code{c(female, male)}.
+
+\strong{stickiness_set}: Between-set fidelity within a trip (0--1). Within each
+trip, the same superpod is targeted for all sets. Before each set, individuals
+remain in their current superpod with probability \code{stickiness_set}; those
+that move emigrate to a different superpod.  Can be scalar or sex-specific.
+
+These parameters control \strong{duplication rates}: when \code{stickiness_set} is
+high (close to 1.0), the same individuals are likely to be caught in multiple
+sets within a trip, increasing duplication.  Conversely, low stickiness means
+more turnover and more unique individuals per trip.
+}
+
+\subsection{Sampling Modes: sample_per}{
+
+\strong{sample_per = "set"}: Each set independently samples \code{sample_size}
+individuals (without replacement within a set). Total per trip = sample_size *
+n_sets. Allows different catch sizes per set.
+
+\strong{sample_per = "trip"}: The total per trip is \code{sample_size}, distributed
+evenly across n_sets (sample_size / n_sets per set). If sample_size is not
+evenly divisible, the first few sets get an extra individual to reach
+sample_size total. Enforces a per-trip quota.
+}
+
+\subsection{Spatial Structure: superpod_pool}{
+
+Controls which superpods are accessible to each trip:
+\itemize{
+\item NULL (default): All superpods are equally available to all trips.
+\item List of length n_trips: \code{superpod_pool[[i]]} is a vector of
+superpod IDs available to trip i. Useful for enforcing spatial structure
+(e.g., northern trips encounter communities 1--30, southern trips encounter
+communities 31--60).
+}
+}
+
+\subsection{Cow-Calf Dynamics}{
+
+Dependent calves (age < \code{weaning_age}) follow their mother's pod and
+superpod and are sampled accordingly. Once weaned, calves are treated as
+independent individuals and subject to the same reshuffling as adults.
+}
+
+\subsection{Output Structure}{
+
+Returns a \code{data.table} with one row per catch event (individual × set).
+Columns include:
+\itemize{
+\item \strong{Individual data}: \code{id}, \code{birth_year}, \code{age},
+\code{sex}, \code{mother_id}, \code{father_id}.
+\item \strong{Population}: \code{population} (always 1 for single-population
+simulations).
+\item \strong{Social structure}: \code{pod}, \code{superpod} (if used).
+\item \strong{Sampling metadata}: \code{year}, \code{trip}, \code{set}.
+}
+
+\strong{Duplicate detection}: The same individual may appear multiple times (one row
+per set where caught). To count unique samples per trip (or year), deduplicate
+by \code{id}:
+\code{unique(samples, by = "id")} or \code{samples[!duplicated(id)]}.
+
+\strong{Exclusions}: Internal columns (\code{s2_year}, \code{breed_state},
+\code{fertile}, \code{mat_age}) are dropped before return to keep the output
+focused on sampling-relevant fields.
+}
+}
+\references{
+Barlow, J., & Boveng, P. (1991). Modeling age-specific mortality for marine
+mammal populations. Marine Mammal Science, 7(1), 50-65.
+
+Caswell, H. (2001). Matrix Population Models: Construction, Analysis, and
+Interpretation (2nd ed.). Sinauer Associates.
+}

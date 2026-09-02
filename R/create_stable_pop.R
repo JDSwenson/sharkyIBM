@@ -3,7 +3,6 @@
 #' Determines the parameter adjustments needed to stabilize an age-structured
 #' population, then returns a bundled configuration object for use by
 #' \code{simulate.pop()}.  Two stabilization modes are available:
-#'
 #' \itemize{
 #'   \item \strong{s0 calibration} (\code{density_dependence = FALSE}, default):
 #'     Bisects age-0 survival (s0) until population growth is near zero.  The
@@ -26,15 +25,14 @@
 #'     convergence.
 #' }
 #'
-#' @param max_age Integer. Maximum age in the population.
+#' @param max_age Integer. Maximum age in the population. Individuals will breed at this age, but will be removed from the population before breeding again.
 #' @param survival Numeric vector of length \code{max_age + 1}. Annual survival
 #'   probabilities for ages 0 through \code{max_age}.  When
 #'   \code{density_dependence = FALSE}, the age-0 value is a placeholder that
 #'   will be replaced by the calibrated estimate.  When
 #'   \code{density_dependence = TRUE}, all values including age-0 are used as
 #'   supplied.
-#' @param pop_size Integer. Total starting population size (= carrying capacity
-#'   K when density dependence is active).
+#' @param pop_size Integer. Total starting population size. Equal to carrying capacity K when density dependence is active.
 #' @param maturity_age Maturity specification. Can be:
 #'   \itemize{
 #'     \item An integer: knife-edged maturity at that age for both sexes.
@@ -50,18 +48,15 @@
 #'   mothers whose calves die are released to \code{psi_rest}.
 #' @param psi_rest Numeric in \[0, 1\]. Conception probability while resting
 #'   (no dependent calf), or after calf death.  Should be >= \code{psi_nurse}.
-#' @param num_mates Integer. Number of mates per female.  Passed through to
+#' @param num_mates Integer. Number of mates per female per breeding cycle.  Passed through to
 #'   \code{simulate.pop()}.
-#' @param female_fraction Numeric in (0, 1). Fraction of offspring that are
-#'   female.
-#' @param infertility Numeric (scalar or length-2 vector \code{c(female,
-#'   male)}). Proportion of permanently infertile individuals.  Default 0.
+#' @param female_fraction Numeric in (0, 1). Fraction of offspring that are female.
+#' @param infertility Numeric (scalar or length-2 vector \code{c(female, male)}). Proportion of permanently infertile individuals.  Default 0.
 #' @param pod_size Integer or NULL. Number of individuals per pod.
 #' @param superpod_size Integer or NULL. Number of pods per superpod.
-#' @param stickiness_year Numeric (scalar or length-2 vector) or NULL.
-#'   Between-year superpod fidelity.
+#' @param stickiness_year Numeric (scalar or length-2 vector \code{c(female, male)}) or NULL. Between-year superpod fidelity i.e., probability that individuals will switch superpods between simulation years.
 #' @param male_behavior Character or NULL. \code{"random"} or
-#'   \code{"strong_bull"}.
+#'   \code{"strong_bull"}. "random" means that all mature males are eligible to mate with mature females from their superpod; "strong_bull" means that just one randomly selected male will be eligible to mate with mature females from their superpod. The "strong_bull" status will remain with the male who receives that designation until he dies, at which point another randomly selected male will take over as the strong bull for that superpod.
 #' @param max_females Integer or NULL. Per-year cap on matings per male.
 #' @param weaning_age Integer or NULL. Age at independence from mother.  Also
 #'   determines the maximum number of years a mother stays in the "with
@@ -71,18 +66,242 @@
 #'   density dependence instead of s0 calibration.  Default \code{FALSE}.
 #' @param z_pt Numeric. Pella--Tomlinson shape parameter.  Default 2.39
 #'   (IWC convention; MNPL at ~0.6 K).  Only used when
-#'   \code{density_dependence = TRUE}.
-#' @param dd_max Numeric. Maximum logit-scale shift on conception probabilities
-#'   at zero depletion (D -> 0).  Controls compensation strength.  Required
-#'   when \code{density_dependence = TRUE}.  Larger values allow faster
-#'   recovery from depletion.
+#'   \code{density_dependence = TRUE}. The default value for this parameter was modeled after cetaceans.
+#' @param dd_max Numeric or NULL. Maximum logit-scale shift on conception
+#'   probabilities at zero depletion (D -> 0).  Controls compensation strength.
+#'   Larger values allow faster recovery from depletion.  When
+#'   \code{density_dependence = TRUE}, supply either \code{dd_max} (direct) or
+#'   \code{target_interval} (anchored), not both.
+#'
+#'   \strong{In most cases, leave this \code{NULL} and use \code{target_interval}
+#'   / \code{target_depletion} instead.}  \code{dd_max} has no biologically
+#'   meaningful default; a logit-scale shift is not something most users can
+#'   reason about directly, and a plausible-looking value (e.g. 2) can be far
+#'   too weak for a given life history (see \code{target_interval} below and
+#'   the anchoring discussion in \code{@details}).  Supplying \code{dd_max}
+#'   directly is intended for sensitivity analyses (sweeping compensation
+#'   strength) or purely theoretical runs with no real calving-interval data
+#'   to anchor to.  Supplying it will print a message recommending
+#'   \code{target_interval} unless you are clearly running a sweep.
+#' @param target_interval Numeric or NULL. \strong{Recommended over
+#'   \code{dd_max} for real species work.} Target calving interval in years at
+#'   the reference depletion \code{target_depletion}.  When provided (and
+#'   \code{density_dependence = TRUE}), the function solves for the
+#'   \code{dd_max} that reproduces this interval, rather than requiring
+#'   \code{dd_max} directly.  Must be >= 2 (structural floor: 1 year pregnancy
+#'   + 1 year dependency) and shorter than the calving interval at carrying
+#'   capacity K.  Anchoring to an empirically observed calving interval is far
+#'   more defensible than guessing a logit-scale shift.
+#' @param target_depletion Numeric in (0, 1). Reference depletion level at
+#'   which \code{target_interval} was observed.  Default 0.3 (30\% of K).
+#'   Only used when \code{target_interval} is provided.
 #' @param check_interval Integer. Years per assessment window. Default 10.
 #' @param growth_tol Numeric. Stability tolerance. Default 0.001.
 #' @param stable_required Integer. Consecutive stable windows needed. Default 5.
 #' @param max_windows Integer. Safety cap on windows. Default 100.
 #'
+#' @details
+#'
+#' ## Calibration Modes
+#'
+#' **s0 calibration** (\code{density_dependence = FALSE}, default): This function
+#' searches for the age-0 survival rate (s0) that results in a stable population.
+#' The user provides a complete survival vector with any placeholder value for age 0;
+#' this function replaces it with the calibrated estimate.  The algorithm uses a
+#' two-phase approach:
+#' \enumerate{
+#'   \item Leslie matrix analytically estimates the starting s0 (or gives a bounds
+#'     check for the bisection).
+#'   \item Bisection iteratively refines s0 over assessment windows of
+#'     \code{check_interval} years until population growth is near zero
+#'     (\code{|r| < growth_tol}) for \code{stable_required} consecutive windows.
+#' }
+#' The Leslie matrix fecundity row uses a corrected maturity ogive (shifted right
+#' by one year) so that newly mature females contribute zero fecundity at their
+#' first mature age, matching the IBM behavior.
+#'
+#' **Density dependence mode** (\code{density_dependence = TRUE}): Instead of
+#' calibrating s0, the user supplies a complete, empirically-informed survival
+#' curve (including age-0) and this function calibrates a logit-scale offset
+#' (\code{theta_shift}) on conception rates (\code{psi_nurse}, \code{psi_rest}).
+#' The result is a population that is stable at carrying capacity K, with
+#' Pella-Tomlinson compensation active in \code{simulate.pop()}.  Outputs include
+#' \code{theta_shift}, \code{theta_shift_leslie} (analytical), \code{psi_nurse_K},
+#' \code{psi_rest_K} (reference conception rates at K).  The calibration solves
+#' for the offset that makes lambda(K) = 1 (growth rate at carrying capacity = 1).
+#'
+#' ## Two-Phase Approach
+#'
+#' **Phase 1: Leslie matrix** (analytical estimate)
+#' Constructs an age-structured Leslie matrix based on the stable age distribution
+#' and fecundity. Computes the dominant eigenvalue (growth rate lambda) and
+#' extracts the stable age distribution. Uses this to estimate the starting s0
+#' (or theta_shift) for bisection.  The Leslie matrix is built using:
+#' \itemize{
+#'   \item Survival probabilities from the \code{survival} input (or a trial value
+#'     for s0/theta_shift in DD mode).
+#'   \item Fecundity = (maturity ogive) * (breeding stationary proportion) * (litter_size).
+#'   \item For s0 calibration: solves analytically for s0 that makes lambda = 1.
+#'   \item For DD: uses uniroot to find theta_shift that makes lambda = 1.
+#' }
+#'
+#' **Phase 2: Iterative bisection** (refinement via simulation)
+#' The Leslie estimate (or bounds) seed a bisection search. The algorithm:
+#' \enumerate{
+#'   \item Runs \code{check_interval} years of simulation at the current candidate
+#'     s0 (or theta_shift).
+#'   \item Assesses population growth rate r over the window.
+#'   \item If r > \code{growth_tol}: s0 is too high (or theta_shift too high);
+#'     bisect down.
+#'   \item If r < \code{-growth_tol}: s0 is too low (or theta_shift too low);
+#'     bisect up.
+#'   \item If \code{|r| < growth_tol}: window is stable; increment stable counter.
+#'   \item Continues until \code{stable_required} consecutive stable windows occur,
+#'     or \code{max_windows} is reached (safety limit).
+#' }
+#' Total calibration time is typically 100--220 years. Default tolerances
+#' (\code{check_interval = 10}, \code{growth_tol = 0.001}, \code{stable_required = 5})
+#' balance precision and computational cost.
+#'
+#' ## Initial Population Structure
+#'
+#' The initial population is sampled from the Leslie-stable age distribution.
+#' Every individual is assigned:
+#' \itemize{
+#'   \item A unique ID (1, 2, ..., pop_size).
+#'   \item Sex: Bernoulli(female_fraction).
+#'   \item Age: Drawn from stable age distribution.
+#'   \item Maturity age (\code{mat_age}): Drawn from maturity ogive PMF at birth.
+#'     Later, the individual matures when calendar age >= mat_age.
+#'   \item Fertility: Bernoulli(1 - infertility); if infertile, the individual
+#'     never breeds.
+#'   \item Pod and superpod: Assigned deterministically from fixed mapping,
+#'     starting with pod 1 to superpod 1, pod 2 to superpod 1, etc.
+#'   \item Breeding state (for females): S1, S2, or S3, drawn from the breeding
+#'     stationary distribution. S2 females are assigned a placeholder calf (age 0,
+#'     sex random, generated on the fly).
+#'   \item mother_id = 0, father_id = 0 (founders; marked for later flush).
+#' }
+#'
+#' ## Markov Breeding Cycle
+#'
+#' The function uses a numerically-derived Markov breeding stationary distribution
+#' to initialize and reason about breeding state proportions. The breeding cycle
+#' is parameterized by:
+#' \itemize{
+#'   \item \code{psi_nurse}, \code{psi_rest}: Conception rates while nursing vs.
+#'     resting.
+#'   \item \code{weaning_age}: Maximum years an S2 mother stays with her calf
+#'     (default 1 if NULL).
+#' }
+#' The stationary distribution is computed from a Markov transition matrix built
+#' by \code{breeding_stationary()} helper, accounting for calf survival rates. In
+#' \code{simulate.pop()}, this ratio between conception states drives the actual
+#' age-specific birth rates.
+#'
+#' ## Social Structure Initialization
+#'
+#' Pods and superpods are created deterministically during initialization. If
+#' \code{pod_size = 20} and \code{superpod_size = 10}, then:
+#' \itemize{
+#'   \item Pods 1--10 belong to superpod 1.
+#'   \item Pods 11--20 belong to superpod 2.
+#'   \item Etc.
+#' }
+#' This mapping is stored in the \code{pod_to_sp} vector and passed to
+#' \code{simulate.pop()} and \code{sample.pop()}.
+#'
+#' ## Mating and Fertility
+#'
+#' The function sets up the framework for \code{simulate.pop()} to handle mating:
+#' \itemize{
+#'   \item \code{num_mates}: Number of males each female mates with.
+#'   \item \code{male_behavior}: "random" (polyandry from superpod pool) or
+#'     "strong_bull" (one persistent male per superpod).
+#'   \item \code{max_females}: Per-year cap on a male's mating partners (prevents
+#'     monopolization).
+#'   \item \code{infertility}: Proportion of infertile individuals (same or
+#'     sex-specific). Infertile females never breed; infertile males are excluded
+#'     from mating pools.
+#' }
+#'
+#' ## Density Dependence Parameters
+#'
+#' When \code{density_dependence = TRUE}, the function calibrates:
+#' \itemize{
+#'   \item \code{theta_shift}: Logit-scale offset on conception rates that achieves
+#'     stability at K.
+#'   \item \code{psi_nurse_K}, \code{psi_rest_K}: Reference conception rates at K
+#'     (shifted by theta_shift from user inputs).
+#'   \item \code{z_pt}: Pella-Tomlinson shape (default 2.39, IWC convention places
+#'     MNPL at 0.6K).
+#'   \item \code{dd_max}: Maximum logit shift at zero depletion (controls
+#'     compensation strength). Either supplied directly or solved from
+#'     \code{target_interval}.
+#' }
+#'
+#' **Anchoring dd_max to a target calving interval (recommended):** Rather
+#' than choosing \code{dd_max} directly, supply \code{target_interval}
+#' (observed calving interval in years) and \code{target_depletion} (the
+#' depletion level at which that interval was observed).  After the
+#' theta_shift calibration finds the at-K conception rates
+#' (\code{psi_nurse_K}, \code{psi_rest_K}), the function solves for the
+#' \code{dd_max} that reproduces the target interval at the reference
+#' depletion using \code{uniroot()}.  This is far more principled than
+#' choosing \code{dd_max} directly, because:
+#' \itemize{
+#'   \item Users can reason about calving intervals more intuitively than
+#'     logit-scale shift magnitudes -- \code{dd_max} has no biologically
+#'     meaningful default value.
+#'   \item The anchored value is species-specific and grounded in empirical
+#'     demographic data, rather than guessed.
+#'   \item Plausible-looking placeholder values (e.g., dd_max = 2) can be far
+#'     too weak for a given species' life history, producing a population
+#'     that cannot recover from depletion.
+#' }
+#' \strong{In most cases, leave \code{dd_max = NULL} and use
+#' \code{target_interval} / \code{target_depletion} instead.}  Supplying
+#' \code{dd_max} directly is intended for sensitivity analyses (e.g., sweeping
+#' compensation strength across several values) or theoretical runs with no
+#' empirical calving-interval data to anchor to; a message is printed
+#' whenever \code{dd_max} is supplied directly, as a reminder.
+#'
+#' In \code{simulate.pop()}, depletion D(t) = N_1+(t) / K_1+ is computed each year,
+#' and conception rates are shifted as psi(t) = psi_K + delta_max * \code{[1 - D(t)^z]}.
+#'
+#' ## Output Structure
+#'
+#' The returned list bundles all parameters needed by \code{simulate.pop()},
+#' including:
+#' \itemize{
+#'   \item \strong{Calibration results}: \code{s0} (or \code{theta_shift}),
+#'     \code{s0_leslie}, \code{final_N}, \code{years_simulated}.
+#'   \item \strong{Life history}: \code{max_age}, \code{survival}, \code{litter_size}.
+#'   \item \strong{Demographics}: \code{pop_size}, \code{female_fraction},
+#'     \code{maturity_age}, \code{infertility}.
+#'   \item \strong{Breeding}: \code{psi_nurse}, \code{psi_rest},
+#'     \code{num_mates}, \code{male_behavior}, \code{max_females},
+#'     \code{weaning_age}.
+#'   \item \strong{Social}: \code{pod_size}, \code{superpod_size},
+#'     \code{stickiness_year}, \code{pod_to_sp}.
+#'   \item \strong{DD (if active)}: \code{density_dependence = TRUE},
+#'     \code{theta_shift}, \code{theta_shift_leslie}, \code{psi_nurse_K},
+#'     \code{psi_rest_K}, \code{z_pt}, \code{dd_max}, \code{K_1plus},
+#'     \code{target_interval}, \code{target_depletion} (if anchored).
+#' }
+#'
 #' @return A list (returned invisibly) with calibration results and all shared
 #'   parameters needed by \code{simulate.pop()}.
+#'
+#' @references
+#' Caswell, H. (2001). Matrix Population Models: Construction, Analysis, and
+#' Interpretation (2nd ed.). Sinauer Associates.
+#'
+#' Pella, J. J., & Tomlinson, P. K. (1973). A generalized stock production
+#' model. Inter-American Tropical Tuna Commission Bulletin, 13, 422-458.
+#'
+#' Barlow, J., & Boveng, P. (1991). Modeling age-specific mortality for marine
+#' mammal populations. Marine Mammal Science, 7(1), 50-65.
 #'
 #' @importFrom data.table data.table set rbindlist
 #' @importFrom stats runif rpois uniroot qlogis plogis
@@ -106,6 +325,8 @@ create.stable.pop <- function(max_age,
                               density_dependence = FALSE,
                               z_pt            = 2.39,
                               dd_max          = NULL,
+                              target_interval  = NULL,
+                              target_depletion = 0.3,
                               check_interval  = 10L,
                               growth_tol      = 0.001,
                               stable_required = 5L,
@@ -225,10 +446,39 @@ create.stable.pop <- function(max_age,
     stop("`density_dependence` must be TRUE or FALSE.")
 
   if (density_dependence) {
-    if (is.null(dd_max))
-      stop("`dd_max` is required when `density_dependence = TRUE`.")
-    if (!is.numeric(dd_max) || length(dd_max) != 1L || dd_max <= 0)
-      stop("`dd_max` must be a positive number.")
+    # Exactly one of dd_max or target_interval must be provided
+    has_dd  <- !is.null(dd_max)
+    has_ti  <- !is.null(target_interval)
+    if (!has_dd && !has_ti)
+      stop("When `density_dependence = TRUE`, supply either `dd_max` ",
+           "(direct) or `target_interval` (anchored).")
+    if (has_dd && has_ti)
+      stop("Supply `dd_max` or `target_interval`, not both.")
+
+    if (has_dd) {
+      if (!is.numeric(dd_max) || length(dd_max) != 1L || dd_max <= 0)
+        stop("`dd_max` must be a positive number.")
+      message(
+        "Note: `dd_max` was supplied directly. In most cases, `dd_max` ",
+        "should be left NULL and `target_interval` (with `target_depletion`) ",
+        "used instead, which anchors compensation strength to an observed ",
+        "calving interval rather than an arbitrary logit-scale shift. ",
+        "Supplying `dd_max` directly is intended for sensitivity analyses ",
+        "or theoretical runs without empirical calving-interval data."
+      )
+    }
+    if (has_ti) {
+      if (!is.numeric(target_interval) || length(target_interval) != 1L ||
+          target_interval <= 0)
+        stop("`target_interval` must be a positive number (calving interval in years).")
+      # Structural floor: pregnancy (1 yr) + at least 1 yr dependency
+      if (target_interval < 2)
+        stop("`target_interval` must be >= 2 (minimum: 1 year pregnancy + 1 year dependency).")
+      if (!is.numeric(target_depletion) || length(target_depletion) != 1L ||
+          target_depletion <= 0 || target_depletion >= 1)
+        stop("`target_depletion` must be in (0, 1), exclusive.")
+    }
+
     if (!is.numeric(z_pt) || length(z_pt) != 1L || z_pt <= 0)
       stop("`z_pt` must be a positive number.")
     if (psi_nurse == 0 || psi_rest == 0)
@@ -304,6 +554,53 @@ create.stable.pop <- function(max_age,
     idx <- which.min(abs(Mod(ev$values) - 1))
     pi  <- Mod(ev$vectors[, idx])
     pi / sum(pi)
+  }
+
+  # Solve for dd_max that reproduces a target calving interval at a reference
+
+  # depletion level.  Called after theta_shift calibration (which determines
+  # psi_nurse_K and psi_rest_K).  The calving interval = 1 / pi_1, where pi_1
+  # is the stationary probability of S1 (pregnant) in the breeding chain with
+  # conception rates shifted by dd_max * (1 - D^z) on the logit scale.
+  solve_dd_max <- function(psi_n_K, psi_r_K, target_int, target_dep, z, sv, w) {
+    logit_n    <- qlogis(psi_n_K)
+    logit_r    <- qlogis(psi_r_K)
+    shift_frac <- 1 - target_dep^z  # constant for this D and z
+
+    # Calving interval at K (dd_max contribution = 0)
+    pi_1_K      <- breeding_stationary(psi_n_K, psi_r_K, sv, w)[1]
+    interval_K  <- 1 / pi_1_K
+
+    if (target_int >= interval_K)
+      stop(sprintf(
+        paste0("`target_interval` (%.2f yr) must be shorter than the calving ",
+               "interval at K (%.2f yr). Compensation can only shorten the ",
+               "interval below K, not lengthen it."),
+        target_int, interval_K
+      ))
+
+    obj <- function(dd) {
+      delta <- dd * shift_frac
+      pn_d  <- plogis(logit_n + delta)
+      pr_d  <- plogis(logit_r + delta)
+      pi_1  <- breeding_stationary(pn_d, pr_d, sv, w)[1]
+      1 / pi_1 - target_int
+    }
+
+    # Lower bound: dd_max just above 0 (interval ≈ at-K value)
+    # Upper bound: dd_max = 50 (extremely strong compensation)
+    result <- tryCatch(
+      uniroot(obj, interval = c(1e-4, 50), tol = 1e-6),
+      error = function(e) {
+        stop(sprintf(
+          paste0("Cannot find dd_max that produces a %.2f-yr calving interval ",
+                 "at D=%.2f. The target may be below the structural floor ",
+                 "(2 yr). Error: %s"),
+          target_int, target_dep, conditionMessage(e)
+        ))
+      }
+    )
+    result$root
   }
 
   # ===========================================================================
@@ -848,6 +1145,16 @@ create.stable.pop <- function(max_age,
     psi_nurse_K <- plogis(logit_psi_nurse_base + theta_current)
     psi_rest_K  <- plogis(logit_psi_rest_base  + theta_current)
 
+    # Solve for dd_max from target calving interval if requested
+    if (!is.null(target_interval)) {
+      dd_max <- solve_dd_max(psi_nurse_K, psi_rest_K, target_interval,
+                             target_depletion, z_pt, survival, wa_breed)
+      message(sprintf(
+        "Anchored dd_max = %.4f  (target: %.2f-yr interval at D=%.2f)",
+        dd_max, target_interval, target_depletion
+      ))
+    }
+
     message(sprintf(paste0(
       "\nConverged: theta_shift = %.4f",
       "  (psi_nurse_K=%.4f, psi_rest_K=%.4f, %d years simulated, final N = %s)"),
@@ -870,6 +1177,8 @@ create.stable.pop <- function(max_age,
       density_dependence = TRUE,
       z_pt            = z_pt,
       dd_max          = dd_max,
+      target_interval  = target_interval,
+      target_depletion = if (!is.null(target_interval)) target_depletion else NULL,
       K_1plus         = K_1plus,
       # Shared life-history parameters
       max_age         = max_age,
