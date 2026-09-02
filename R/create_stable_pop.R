@@ -20,9 +20,9 @@
 #'
 #' Both modes use a two-phase approach:
 #' \enumerate{
-#'   \item \strong{Leslie matrix} — analytically solves for the starting
+#'   \item \strong{Leslie matrix} -- analytically solves for the starting
 #'     estimate (s0 or theta_shift).
-#'   \item \strong{Iterative simulation} — refines via bisection until
+#'   \item \strong{Iterative simulation} -- refines via bisection until
 #'     convergence.
 #' }
 #'
@@ -111,9 +111,9 @@ create.stable.pop <- function(max_age,
                               stable_required = 5L,
                               max_windows     = 100L) {
 
-  # ═══════════════════════════════════════════════════════════════════════════
+  # ===========================================================================
   # INPUT VALIDATION
-  # ═══════════════════════════════════════════════════════════════════════════
+  # ===========================================================================
 
   # -- Core demographic parameters --
   if (!is.numeric(max_age) || length(max_age) != 1L || max_age < 1 ||
@@ -245,9 +245,9 @@ create.stable.pop <- function(max_age,
   if (stable_required < 1) stop("`stable_required` must be >= 1.")
   if (max_windows < 1)     stop("`max_windows` must be >= 1.")
 
-  # ═══════════════════════════════════════════════════════════════════════════
+  # ===========================================================================
   # INTERNAL HELPERS
-  # ═══════════════════════════════════════════════════════════════════════════
+  # ===========================================================================
 
   mat_lambda <- function(A) Mod(eigen(A, only.values = TRUE)$values[1])
 
@@ -256,7 +256,7 @@ create.stable.pop <- function(max_age,
     w / sum(w)
   }
 
-  # ── Breeding cycle stationary distribution ──
+  # -- Breeding cycle stationary distribution --
   # Builds the Markov transition matrix for the generalized breeding cycle
   # and solves for the stationary distribution.
   #
@@ -264,8 +264,8 @@ create.stable.pop <- function(max_age,
   # Dimension: w + 2
   #
   # Calf survival couples the mother's transition to her calf's fate:
-  #   - Calf alive → conception prob = psi_n (suppressed)
-  #   - Calf dead  → conception prob = psi_r (released)
+  #   - Calf alive -> conception prob = psi_n (suppressed)
+  #   - Calf dead  -> conception prob = psi_r (released)
   # The population-level effective rate at S2 year k is the mixture:
   #   psi_k = ell_k * psi_n + (1 - ell_k) * psi_r
   # where ell_k = sv[k] is the calf's survival probability for that year.
@@ -273,7 +273,7 @@ create.stable.pop <- function(max_age,
     n_st <- w + 2L
     P <- matrix(0, nrow = n_st, ncol = n_st)
 
-    # S1 → S2(1): give birth (deterministic)
+    # S1 -> S2(1): give birth (deterministic)
     P[1, 2] <- 1
 
     # S2(k) transitions
@@ -282,20 +282,20 @@ create.stable.pop <- function(max_age,
       ell_k <- sv[k]
       psi_k <- ell_k * psi_n + (1 - ell_k) * psi_r
 
-      P[row, 1] <- psi_k  # → S1 (conceive)
+      P[row, 1] <- psi_k  # -> S1 (conceive)
 
       if (k < w) {
-        # Calf alive AND no conception → advance to S2(k+1)
+        # Calf alive AND no conception -> advance to S2(k+1)
         P[row, row + 1] <- ell_k * (1 - psi_n)
-        # Calf dead AND no conception → S3
+        # Calf dead AND no conception -> S3
         P[row, n_st] <- (1 - ell_k) * (1 - psi_r)
       } else {
-        # Last dependent year: calf weaned regardless → S3 if no conception
+        # Last dependent year: calf weaned regardless -> S3 if no conception
         P[row, n_st] <- 1 - psi_k
       }
     }
 
-    # S3 → S1 or stay S3
+    # S3 -> S1 or stay S3
     P[n_st, 1]    <- psi_r
     P[n_st, n_st] <- 1 - psi_r
 
@@ -306,9 +306,9 @@ create.stable.pop <- function(max_age,
     pi / sum(pi)
   }
 
-  # ═══════════════════════════════════════════════════════════════════════════
+  # ===========================================================================
   # PARSE MATURITY SPECIFICATION
-  # ═══════════════════════════════════════════════════════════════════════════
+  # ===========================================================================
 
   make_ogive <- function(x, max_a) {
     n <- max_a + 1L
@@ -342,9 +342,9 @@ create.stable.pop <- function(max_age,
     sample(ages, n, replace = TRUE, prob = pmf)
   }
 
-  # ═══════════════════════════════════════════════════════════════════════════
+  # ===========================================================================
   # PARSE INFERTILITY
-  # ═══════════════════════════════════════════════════════════════════════════
+  # ===========================================================================
 
   if (length(infertility) == 1L) {
     infertility_f <- infertility_m <- infertility
@@ -353,9 +353,9 @@ create.stable.pop <- function(max_age,
     infertility_m <- infertility[2]
   }
 
-  # ═══════════════════════════════════════════════════════════════════════════
+  # ===========================================================================
   # PARSE WEANING AGE FOR BREEDING CYCLE
-  # ═══════════════════════════════════════════════════════════════════════════
+  # ===========================================================================
   # weaning_age serves two roles:
   #   1. Breeding cycle: how many years a mother stays in S2 (with calf)
   #   2. Social structure: calves below weaning_age follow mother's pod
@@ -364,18 +364,18 @@ create.stable.pop <- function(max_age,
 
   wa_breed <- if (is.null(weaning_age)) 1L else as.integer(weaning_age)
 
-  # ═══════════════════════════════════════════════════════════════════════════
-  # PHASE 1: LESLIE MATRIX — STARTING ESTIMATE
-  # ═══════════════════════════════════════════════════════════════════════════
+  # ===========================================================================
+  # PHASE 1: LESLIE MATRIX -- STARTING ESTIMATE
+  # ===========================================================================
   # Shift the female ogive right by one year: newly mature females enter at S3
   # (resting) and cannot breed in their first year of maturity.
   ogive_f_leslie <- c(0, ogive_f[seq_len(max_age)])
   n_classes <- max_age + 1L
 
   if (!density_dependence) {
-    # ── Mode A: solve for s0 ──
+    # -- Mode A: solve for s0 --
     # Build Leslie matrix with current psi_nurse/psi_rest and find the s0 that
-    # makes the dominant eigenvalue λ = 1. The fecundity row depends on π₁
+    # makes the dominant eigenvalue lambda = 1. The fecundity row depends on pi_1
     # (breeding fraction), which itself depends on s0 through calf survival.
 
     A <- matrix(0, nrow = n_classes, ncol = n_classes)
@@ -421,14 +421,14 @@ create.stable.pop <- function(max_age,
       psi_nurse, psi_rest, pi_1 * 100, 1 / pi_1
     ))
     message(sprintf(
-      "Phase 1 — Leslie estimate: s0 = %.4f  (lambda = %.6f)",
+      "Phase 1 -- Leslie estimate: s0 = %.4f  (lambda = %.6f)",
       s0_leslie, mat_lambda(A)
     ))
 
   } else {
-    # ── Mode B: solve for theta_shift (density dependence) ──
+    # -- Mode B: solve for theta_shift (density dependence) --
     # Survival is fixed (user-supplied, including s0). Find the logit-scale
-    # offset on psi_nurse/psi_rest that makes λ(K) = 1.
+    # offset on psi_nurse/psi_rest that makes lambda(K) = 1.
     logit_psi_nurse_base <- qlogis(psi_nurse)
     logit_psi_rest_base  <- qlogis(psi_rest)
 
@@ -475,7 +475,7 @@ create.stable.pop <- function(max_age,
       "Breeding cycle (user-supplied): psi_nurse=%.3f, psi_rest=%.3f", psi_nurse, psi_rest
     ))
     message(sprintf(
-      "Phase 1 — Leslie estimate: theta_shift = %.4f  (psi_nurse_K=%.4f, psi_rest_K=%.4f, lambda=%.6f)",
+      "Phase 1 -- Leslie estimate: theta_shift = %.4f  (psi_nurse_K=%.4f, psi_rest_K=%.4f, lambda=%.6f)",
       theta_shift_leslie, psi_nurse_eff, psi_rest_eff, mat_lambda(A)
     ))
     message(sprintf(
@@ -484,9 +484,9 @@ create.stable.pop <- function(max_age,
     ))
   }
 
-  # ═══════════════════════════════════════════════════════════════════════════
+  # ===========================================================================
   # INITIALISE THE INDIVIDUAL-BASED POPULATION
-  # ═══════════════════════════════════════════════════════════════════════════
+  # ===========================================================================
 
   use_pods <- !is.null(pod_size)
   wa       <- if (is.null(weaning_age)) 0L else weaning_age
@@ -545,7 +545,7 @@ create.stable.pop <- function(max_age,
     s2_year     = init_s2_year
   )
 
-  # ── Pod / superpod setup ──
+  # -- Pod / superpod setup --
   pod_to_sp <- NULL
   if (use_pods) {
     n_pods <- max(1L, round(n_init / pod_size))
@@ -558,9 +558,9 @@ create.stable.pop <- function(max_age,
     set(pop, j = "superpod", value = pod_to_sp[pod_vec])
   }
 
-  # ═══════════════════════════════════════════════════════════════════════════
+  # ===========================================================================
   # PHASE 2: ITERATIVE BISECTION
-  # ═══════════════════════════════════════════════════════════════════════════
+  # ===========================================================================
   # Mode A (DD=FALSE): bisect s0; psi values are constant.
   # Mode B (DD=TRUE):  bisect theta_shift; survival is constant.
 
@@ -591,7 +591,7 @@ create.stable.pop <- function(max_age,
   }
 
   message(sprintf(
-    "Phase 2 — searching (check every %d yrs, tol = %.4f, need %d stable)...",
+    "Phase 2 -- searching (check every %d yrs, tol = %.4f, need %d stable)...",
     check_interval, growth_tol, stable_required
   ))
 
@@ -612,18 +612,18 @@ create.stable.pop <- function(max_age,
     for (w in seq_len(check_interval)) {
       year_counter <- year_counter + 1L
 
-      # ── Survival ──
+      # -- Survival --
       rates <- surv_vec[pop$age + 1L]
       alive <- runif(nrow(pop)) <= rates
       pop   <- pop[alive]
 
-      # ── Aging ──
+      # -- Aging --
       set(pop, j = "age", value = pop$age + 1L)
       pop <- pop[pop$age <= max_age]
 
       if (nrow(pop) == 0L) stop("Population went extinct during calibration.")
 
-      # ── Between-year superpod reshuffling ──
+      # -- Between-year superpod reshuffling --
       if (use_pods && !is.null(stickiness_year)) {
         elig <- which(pop$age >= wa)
         if (length(elig) > 0L) {
@@ -654,7 +654,7 @@ create.stable.pop <- function(max_age,
         }
       }
 
-      # ── Markov breeding state transitions ──
+      # -- Markov breeding state transitions --
       # Newly mature, fertile females enter at S3
       new_mature <- which(pop$sex == "F" & pop$age == pop$mat_age &
                             is.na(pop$breed_state) & pop$fertile)
@@ -667,7 +667,7 @@ create.stable.pop <- function(max_age,
       s2_idx     <- which(pop$breed_state == 2L)   # S2: with calf
       s3_idx     <- which(pop$breed_state == 3L)   # S3: resting
 
-      # ── S2 transitions: calf-survival-dependent ──
+      # -- S2 transitions: calf-survival-dependent --
       # Each S2 mother's transition depends on whether her calf survived.
       # In the calibration we don't track individual calves, so we draw
       # calf survival stochastically from surv_vec based on s2_year.
@@ -682,7 +682,7 @@ create.stable.pop <- function(max_age,
 
         # Determine new state
         new_state <- rep(3L, length(s2_idx))      # default: S3 (resting)
-        new_state[conceive] <- 1L                  # conceive → S1
+        new_state[conceive] <- 1L                  # conceive -> S1
         stay_s2 <- !conceive & calf_alive & k < wa_breed
         new_state[stay_s2] <- 2L                   # stay S2
 
@@ -694,19 +694,19 @@ create.stable.pop <- function(max_age,
         set(pop, i = s2_idx, j = "s2_year", value = new_s2y)
       }
 
-      # ── S3 transitions ──
+      # -- S3 transitions --
       if (length(s3_idx) > 0L) {
         new_state_s3 <- ifelse(runif(length(s3_idx)) < psi_rest_w, 1L, 3L)
         set(pop, i = s3_idx, j = "breed_state", value = new_state_s3)
       }
 
-      # ── S1 → S2: give birth ──
+      # -- S1 -> S2: give birth --
       if (length(mother_idx) > 0L) {
         set(pop, i = mother_idx, j = "breed_state", value = 2L)
         set(pop, i = mother_idx, j = "s2_year",     value = 1L)
       }
 
-      # ── Breeding: create offspring ──
+      # -- Breeding: create offspring --
       has_males <- any(pop$sex == "M" & pop$age >= pop$mat_age & pop$fertile)
 
       if (length(mother_idx) > 0L && has_males) {
@@ -751,7 +751,7 @@ create.stable.pop <- function(max_age,
       window_N[w] <- nrow(pop)
     } # end inner loop
 
-    # ── Assess growth rate for this window ──
+    # -- Assess growth rate for this window --
     growth <- mean(diff(log(window_N)))
 
     if (abs(growth) < growth_tol) {
@@ -794,9 +794,9 @@ create.stable.pop <- function(max_age,
     if (consecutive_stable >= stable_required) break
   } # end bisection loop
 
-  # ═══════════════════════════════════════════════════════════════════════════
+  # ===========================================================================
   # RETURN RESULTS
-  # ═══════════════════════════════════════════════════════════════════════════
+  # ===========================================================================
 
   if (consecutive_stable < stable_required) {
     warning(sprintf(
@@ -806,7 +806,7 @@ create.stable.pop <- function(max_age,
   }
 
   if (!density_dependence) {
-    # ── s0 calibration output ──
+    # -- s0 calibration output --
     survival_out    <- survival
     survival_out[1] <- s0_current
 
@@ -844,7 +844,7 @@ create.stable.pop <- function(max_age,
     ))
 
   } else {
-    # ── Density dependence output ──
+    # -- Density dependence output --
     psi_nurse_K <- plogis(logit_psi_nurse_base + theta_current)
     psi_rest_K  <- plogis(logit_psi_rest_base  + theta_current)
 

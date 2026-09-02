@@ -134,9 +134,9 @@ dynamically based on depletion.
 
 Both modes use a two-phase approach:
 \enumerate{
-\item \strong{Leslie matrix} — analytically solves for the starting
+\item \strong{Leslie matrix} -- analytically solves for the starting
 estimate (s0 or theta_shift).
-\item \strong{Iterative simulation} — refines via bisection until
+\item \strong{Iterative simulation} -- refines via bisection until
 convergence.
 }
 }

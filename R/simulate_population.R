@@ -49,6 +49,7 @@
 #'
 #' @importFrom data.table data.table set rbindlist copy
 #' @importFrom stats runif rpois
+#' @exportS3Method NULL
 #' @rawNamespace export(simulate.pop)
 simulate.pop <- function(sim_config,
                          num_years,
