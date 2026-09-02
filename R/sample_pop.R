@@ -38,9 +38,10 @@
 #'   The same individual may appear multiple times if caught in different sets.
 #'   Deduplicate by \code{id} (within or across years) to count unique samples.
 #'
-#' @importFrom data.table data.table set rbindlist copy
+#' @importFrom data.table data.table set rbindlist copy uniqueN
 #' @importFrom stats runif
 #' @export
+#' @rawNamespace export(sample.pop)
 sample.pop <- function(sim_output,
                        n_trips,
                        n_sets,
@@ -185,7 +186,10 @@ sample.pop <- function(sim_output,
         mask <- which(current_sp == sp)
         pool <- other_pool[[as.character(sp)]]
         if (is.null(pool) || length(pool) == 0L) pool <- all_pods
-        new_pods[mask] <- sample(pool, length(mask), replace = TRUE)
+        # Note: sample(pool, n) would misbehave if pool has length 1 (R
+        # reinterprets a length-1 numeric x as the range 1:x). Indexing by
+        # position avoids this.
+        new_pods[mask] <- pool[sample.int(length(pool), length(mask), replace = TRUE)]
       }
       set(pop, i = movers, j = "pod",      value = new_pods)
       set(pop, i = movers, j = "superpod", value = pod_to_sp[new_pods])
@@ -248,7 +252,8 @@ sample.pop <- function(sim_output,
       # This represents operating in the same geographic area during a trip.
       chosen_sp <- NULL
       if (sampling == "superpod" && use_pods) {
-        chosen_sp <- sample(avail_sps, 1L)
+        # Indexing by position avoids sample()'s length-1 numeric footgun.
+        chosen_sp <- avail_sps[sample.int(length(avail_sps), 1L)]
       }
 
       # Track total samples drawn this trip (for "trip" mode bookkeeping)

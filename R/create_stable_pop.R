@@ -643,7 +643,10 @@ create.stable.pop <- function(max_age,
               mask <- which(current_sp == sp)
               pool <- other_pool[[as.character(sp)]]
               if (is.null(pool) || length(pool) == 0L) pool <- all_pods
-              new_pods[mask] <- sample(pool, length(mask), replace = TRUE)
+              # Note: sample(pool, n) would misbehave if pool has length 1 (R
+              # reinterprets a length-1 numeric x as the range 1:x). Indexing
+              # by position avoids this.
+              new_pods[mask] <- pool[sample.int(length(pool), length(mask), replace = TRUE)]
             }
             set(pop, i = movers, j = "pod",      value = new_pods)
             set(pop, i = movers, j = "superpod", value = pod_to_sp[new_pods])

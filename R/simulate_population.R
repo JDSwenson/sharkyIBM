@@ -42,14 +42,14 @@
 #' @return A named list (returned invisibly):
 #' \describe{
 #'   \item{pop_summary}{data.table: sex-specific numbers-at-age for all simulation years, including burn-in.}
-#'   \item{snapshots}{Named list of data.tables containing metadata for every simulated individual in each year specified by \code{sample.years.}
-#'   \item{pod_to_sp}{Integer vector mapping pod -> superpod.} This is used in \code{sample.pop} to shuffle animals around between sets and trips.
+#'   \item{snapshots}{Named list of data.tables containing metadata for every simulated individual in each year specified by \code{sample_years}.}
+#'   \item{pod_to_sp}{Integer vector mapping pod -> superpod. This is used in \code{sample.pop} to shuffle animals around between sets and trips.}
 #'   \item{sim_config}{Passed through for \code{sample.pop()}.}
 #' }
 #'
 #' @importFrom data.table data.table set rbindlist copy
 #' @importFrom stats runif rpois
-#' @export
+#' @rawNamespace export(simulate.pop)
 simulate.pop <- function(sim_config,
                          num_years,
                          sample_years = NULL) {
@@ -395,7 +395,10 @@ simulate.pop <- function(sim_config,
             mask <- which(current_sp == sp)
             pool <- other_pool[[as.character(sp)]]
             if (is.null(pool) || length(pool) == 0L) pool <- all_pods
-            new_pods[mask] <- sample(pool, length(mask), replace = TRUE)
+            # Note: sample(pool, n) would misbehave if pool has length 1 (R
+            # reinterprets a length-1 numeric x as the range 1:x). Indexing
+            # by position avoids this.
+            new_pods[mask] <- pool[sample.int(length(pool), length(mask), replace = TRUE)]
           }
           set(pop, i = movers, j = "pod",      value = new_pods)
           set(pop, i = movers, j = "superpod", value = pod_to_sp[new_pods])
@@ -543,7 +546,8 @@ simulate.pop <- function(sim_config,
             )
             candidates <- mature_males_dt[
               superpod %in% vacant,
-              .(bull_id = sample(id, 1L)),
+              # Indexing by position avoids sample()'s length-1 numeric footgun.
+              .(bull_id = id[sample.int(.N, 1L)]),
               by = superpod
             ]
             if (nrow(candidates) > 0L) {
@@ -554,7 +558,8 @@ simulate.pop <- function(sim_config,
           for (sp in unique(mother_superpods)) {
             sp_mask <- which(mother_superpods == sp)
             bull_id <- bull_registry[sp]
-            if (bull_id == 0L) bull_id <- sample(all_mature_ids, 1L)
+            if (bull_id == 0L)
+              bull_id <- all_mature_ids[sample.int(length(all_mature_ids), 1L)]
             father_mat[sp_mask, ] <- bull_id
           }
 
@@ -566,16 +571,17 @@ simulate.pop <- function(sim_config,
             n_sp_moms <- length(sp_mask)
             pool      <- father_by_sp[[as.character(sp)]]
             if (is.null(pool) || length(pool) == 0L) pool <- all_mature_ids
-            father_mat[sp_mask, ] <- sample(pool, n_sp_moms * max_nm,
-                                            replace = TRUE)
+            father_mat[sp_mask, ] <-
+              pool[sample.int(length(pool), n_sp_moms * max_nm, replace = TRUE)]
           }
         }
 
       } else {
         # ── No pod structure: global random mating ──
         all_father_ids <- pop$id[mature_male_mask]
-        father_mat[]   <- sample(all_father_ids, n_mothers * max_nm,
-                                 replace = TRUE)
+        father_mat[]   <-
+          all_father_ids[sample.int(length(all_father_ids), n_mothers * max_nm,
+                                     replace = TRUE)]
       }
 
       # ── Assign offspring to parents ──
@@ -611,7 +617,7 @@ simulate.pop <- function(sim_config,
                 pool <- all_father_ids[all_father_ids != fid]
               }
               if (length(pool) > 0L)
-                off_father_id[ri] <- sample(pool, 1L)
+                off_father_id[ri] <- pool[sample.int(length(pool), 1L)]
             }
           }
         }

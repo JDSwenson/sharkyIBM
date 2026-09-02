@@ -5,3 +5,6 @@
 ^\.posit/assistant$
 ^\.positai$
 ^\.claude$
+^AGENTS\.md$
+^conversation-export\.html$
+^conversation-export\.md$
