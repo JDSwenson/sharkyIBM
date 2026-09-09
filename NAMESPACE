@@ -3,6 +3,7 @@
 export(create.stable.pop)
 export(sample.pop)
 export(simulate.pop)
+export(solve_F_sustainable)
 importFrom(data.table,copy)
 importFrom(data.table,data.table)
 importFrom(data.table,rbindlist)

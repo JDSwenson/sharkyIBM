@@ -59,7 +59,8 @@ This is a dolphin population simulation package (`sharkyIBM` — placeholder nam
 
 ### 6. Markov Breeding Cycle with Calf-Survival Coupling
 - Each mature female carries a `breed_state`: S1 (pregnant), S2 (with dependent calf), S3 (resting)
-- **Parameterization:** `psi_nurse` (conception while nursing, suppressed) and `psi_rest` (conception while resting/after calf death, unsuppressed). Replaces the former `psi_2`/`psi_3`.
+- **Parameterization (recommended):** `calving_interval` (target calving interval in years) + `suppression_ratio` (default 0.15 = psi_nurse/psi_rest). The function solves for `psi_nurse` and `psi_rest` internally via `uniroot()` on the Markov breeding stationary distribution. When DD=TRUE and `calving_interval` is not supplied, it defaults to `target_interval`.
+- **Parameterization (legacy):** `psi_nurse` (conception while nursing, suppressed) and `psi_rest` (conception while resting/after calf death, unsuppressed) can still be supplied directly. Cannot be combined with `calving_interval`.
 - **Calf-survival coupling (matching dolphin_population_model.qmd):** In `simulate.pop()`, each S2 mother's conception probability depends on whether *her individual calf* survived:
   - Calf alive → conception prob = `psi_nurse` (lactational suppression)
   - Calf dead → conception prob = `psi_rest` (released from suppression)
@@ -140,7 +141,8 @@ This is a dolphin population simulation package (`sharkyIBM` — placeholder nam
 ```r
 create.stable.pop(
   max_age, survival, pop_size, maturity_age, litter_size,
-  psi_nurse = 0.1, psi_rest = 0.7,
+  calving_interval = NULL, suppression_ratio = 0.15,
+  psi_nurse = NULL, psi_rest = NULL,
   num_mates = 1L, female_fraction = 0.5, infertility = 0,
   pod_size = NULL, superpod_size = NULL, stickiness_year = NULL,
   male_behavior = NULL, max_females = NULL, weaning_age = NULL,
@@ -151,7 +153,7 @@ create.stable.pop(
 )
 ```
 
-**Output (DD=FALSE):** List with calibration results (`s0`, `survival`, `s0_leslie`, `final_N`, `years_simulated`, `density_dependence = FALSE`) plus all shared parameters (including `psi_nurse`, `psi_rest`).
+**Output (DD=FALSE):** List with calibration results (`s0`, `survival`, `s0_leslie`, `final_N`, `years_simulated`, `density_dependence = FALSE`) plus all shared parameters (including `calving_interval`, `suppression_ratio`, `psi_nurse`, `psi_rest`). `calving_interval` and `suppression_ratio` are NULL when psi values were supplied directly.
 
 **Output (DD=TRUE):** List with calibration results (`s0` [user-supplied], `survival` [unchanged], `s0_leslie = NA`, `theta_shift`, `theta_shift_leslie`, `psi_nurse_K`, `psi_rest_K`, `final_N`, `years_simulated`, `density_dependence = TRUE`, `z_pt`, `dd_max`, `target_interval`, `target_depletion`, `K_1plus`) plus all shared parameters. When `target_interval` is used, `dd_max` is the solved value; `target_interval`/`target_depletion` are NULL when `dd_max` was supplied directly.
 
@@ -206,6 +208,22 @@ source("R/sample_pop.R")
 # ── Example 1: s0 calibration (default, DD=FALSE) ──
 ogive_f <- plogis(0:30, location = 9, scale = 1.5)
 
+## Recommended: specify calving_interval
+result <- create.stable.pop(
+  max_age = 30, survival = c(0.65, rep(0.96, 30)),
+  pop_size = 50000,
+  maturity_age = list(female = ogive_f, male = 10L),
+  litter_size = 1,
+  calving_interval = 3.5,
+  suppression_ratio = 0.15,
+  infertility = c(0.10, 0.05),
+  num_mates = 1L,
+  pod_size = 20, superpod_size = 10,
+  stickiness_year = c(0.95, 0.85),
+  male_behavior = "random", max_females = 50, weaning_age = 3L
+)
+
+## Legacy: supply psi_nurse/psi_rest directly
 result <- create.stable.pop(
   max_age = 30, survival = c(0.65, rep(0.96, 30)),
   pop_size = 50000,
@@ -228,33 +246,37 @@ M[ages >= 28] <- M[ages >= 28] +
          (exp(0.3 * (40 - 28)) - 1)
 surv_siler <- exp(-M)
 
-## dd_max supplied directly:
+## DD=TRUE: rho + target_interval (recommended)
+## rho sets the nursing/resting log-odds gap (default -3.255 from eastern spinner)
+## target_interval anchors dd_max to an empirically observed calving interval
 result_dd <- create.stable.pop(
-  max_age = 40, survival = surv_siler,
+  survival = surv_siler,
   pop_size = 50000,
-  maturity_age = 9L,
-  litter_size = 1,
-  psi_nurse = 0.1, psi_rest = 0.7,
+  # rho = -3.255 (default), target_interval = 2.84 (default),
+  # target_depletion = 0.3 (default), z_pt = 2.39 (default)
   pod_size = 20, superpod_size = 10,
   stickiness_year = 0.9,
-  male_behavior = "random", weaning_age = 2L,
-  density_dependence = TRUE, z_pt = 2.39, dd_max = 3.0
+  male_behavior = "random",
+  density_dependence = TRUE
 )
+# Output includes:
+#   theta         = solved logit(psi_rest) at K
+#   rho           = -3.255 (user input)
+#   psi_nurse_K   = derived: inv_logit(theta + rho)
+#   psi_rest_K    = derived: inv_logit(theta)
+#   interval_K    = emergent calving interval at K
+#   dd_max        = solved from target_interval/target_depletion
 
-## OR anchor dd_max to an observed calving interval:
-result_dd <- create.stable.pop(
-  max_age = 40, survival = surv_siler,
+## DD=TRUE with custom rho and dd_max directly
+result_dd2 <- create.stable.pop(
+  survival = surv_siler,
   pop_size = 50000,
-  maturity_age = 9L,
-  litter_size = 1,
-  psi_nurse = 0.1, psi_rest = 0.7,
+  rho = -2.5,
   pod_size = 20, superpod_size = 10,
   stickiness_year = 0.9,
-  male_behavior = "random", weaning_age = 2L,
-  density_dependence = TRUE, z_pt = 2.39,
-  target_interval = 2.84, target_depletion = 0.3
+  male_behavior = "random",
+  density_dependence = TRUE, dd_max = 3.0
 )
-# result_dd$dd_max contains the solved value
 
 sim <- simulate.pop(result_dd, num_years = 50, sample_years = 5)
 
@@ -317,6 +339,17 @@ unique_samples <- samples[!duplicated(id)]
 ✓ **DD recovery from 50% K:** Population recovers to K within ~60 years (same as before)
 ✓ **sample.pop() compatibility:** Internal columns (s2_year) excluded from samples; calf_id excluded via keep_cols whitelist
 ✓ **Backward compatibility note:** `psi_2`/`psi_3` parameters are REMOVED; existing code must switch to `psi_nurse`/`psi_rest`
+
+### DD-mode rho refactor (Sep 8)
+✓ **rho replaces calving_interval in DD mode:** Single supplied number `rho` (log-odds gap, default -3.255 from eastern spinner pregnant:lactating ratio); theta (logit psi_rest at K) is solved for R0=1
+✓ **calving_interval rejected in DD mode:** Clear error message directing users to target_interval + target_depletion
+✓ **psi_nurse/psi_rest rejected in DD mode:** Clear error message directing users to rho
+✓ **target_interval default 2.84:** Anchors dd_max to Chivers 1992 pregnancy-rate reciprocal at D=0.3 by default
+✓ **Emergent interval at K reported:** Output includes `interval_K` (e.g., 4.29 yr for eastern spinner defaults)
+✓ **DD=FALSE unchanged:** calving_interval + suppression_ratio and psi_nurse/psi_rest paths both work as before
+✓ **Full pipeline:** create.stable.pop (DD=TRUE) → simulate.pop → sample.pop all pass
+✓ **All 107 tests pass:** Updated test fixtures to use rho for DD, weaning_age=1L for speed fixtures
+✓ **Default values from reference model:** max_age=40, maturity_age=9, litter_size=1, weaning_age=2, rho=-3.255, z_pt=2.39, target_interval=2.84, target_depletion=0.3
 
 ### Anchored dd_max (Sep 2)
 ✓ **target_interval anchoring (recommended):** `create.stable.pop()` accepts `target_interval` + `target_depletion` as the primary interface; solves for dd_max via uniroot after theta_shift calibration
@@ -394,24 +427,83 @@ Deep dive explanations provided in conversation:
 - **Log-odds parameterization** — why rho (log odds of nursing vs rest) is better than probability ratio
 - **MNPL and Pella-Tomlinson z** — IWC convention: z=2.39 sets MNPL at 0.6K
 
+## Common Confusions / Gotchas
+
+### DD=TRUE breeding design (Sep 8 refactor)
+
+In DD mode, the breeding cycle has exactly ONE user-supplied number: **`rho`** (log-odds gap between nursing and resting conception, default -3.255). Everything else is derived:
+
+- **`theta`** (logit of psi_rest at K) is **solved** so R0 = 1 at K.
+- **`psi_rest_K = inv_logit(theta)`**, **`psi_nurse_K = inv_logit(theta + rho)`**.
+- **Calving interval at K** is **emergent** — it falls out from rho + the stability constraint. You cannot set it directly because there is no free scale left once replacement (R0=1) is enforced.
+- To target an empirically observed calving interval (e.g., 2.84 yr from Chivers 1992), use **`target_interval`** + **`target_depletion`**, which solve for `dd_max` (compensation strength) at the depletion where the data was collected, NOT at K.
+
+### Why `rho` and not a probability ratio
+
+`suppression_ratio` (psi_nurse / psi_rest) is a probability ratio. DD compensation shifts both probabilities by the same amount on the **logit** scale. Under that transform:
+- **`rho` (log-odds gap) is exactly invariant** — it means the same thing at every depletion level.
+- **A probability ratio is NOT invariant** — it drifts as both probabilities shift toward 0 or 1.
+
+This is why `rho` is the correct coordinate for DD mode. `suppression_ratio` is still used for DD=FALSE mode, where no compensation shift occurs, so the ratio is stable.
+
+### `calving_interval` is DD=FALSE only
+
+`calving_interval` + `suppression_ratio` solve for `psi_nurse`/`psi_rest` via `uniroot()` and only work when `density_dependence = FALSE`. Supplying `calving_interval` with DD=TRUE is an error — use `target_interval` instead.
+
+### Fishing mortality, depleted initialization (Sep 8)
+✓ **`solve_F_sustainable()`** — New exported function in `create_stable_pop.R`. Given a DD config, solves for the constant F that holds the population stationary at `target_depletion` via Leslie eigenvalue. Returns F, selectivity, fished stable age distribution, and theoretical calving interval at equilibrium.
+✓ **`F_t` + `selectivity` in `simulate.pop()`** — Optional fishing mortality as competing hazard: `S_total(a) = survival[a] * exp(-F * selectivity[a])`. Scalar or year-specific vector. Applied post-burn-in by default; applied throughout when `init_depletion` is set.
+✓ **`init_depletion` in `simulate.pop()`** — Initializes at `init_depletion × pop_size` with the **fished** stable age distribution (younger-skewed, correct for a depleted population). Avoids simulating the full K. Fishing applies during burn-in to maintain depletion.
+✓ **Orphan mortality** — Dependent calves (age ≤ weaning_age) whose mothers die (any cause: natural, fishing, max_age removal) are also removed. Runs after survival + aging. Zero orphaned calves in all tested snapshots.
+✓ **Depleted workflow validated** — Three-step workflow: calibrate small (pop_size=20K) → `solve_F_sustainable()` → scale K₁₊ to true K → `simulate.pop(init_depletion=0.3)`. Population never exceeds depleted size.
+✓ **All 126 tests pass** (54 simulate_pop, 51 create_stable_pop, 21 sample_pop).
+✓ **Backward compatibility** — `F_t = NULL` (default) produces identical behavior to pre-change code. No existing call patterns break.
+
+### Leslie-vs-IBM population stability investigation & fix (Sep 9)
+
+**Root cause of population decline:** The Leslie-IBM gap is NOT just orphan mortality. Extensive testing showed:
+1. Even at F=0, the IBM population declines at D=0.3 (−0.2%/yr at 100K pop). The DD compensation is too weak.
+2. `dd_max` is calibrated via Leslie (`solve_dd_max()`), which overestimates the effect of conception rate boosts on growth. The IBM has additional growth sinks: demographic stochasticity, nonlinear breeding-cycle effects, and (if active) orphan mortality.
+3. The theta gap between `theta_leslie` and `theta` (Phase 2-calibrated) ranges from 0.2 to 0.5 on the logit scale.
+4. Analytical corrections tried and failed: (a) using `theta_leslie` in the Leslie solve; (b) orphan mortality correction on Leslie sub-diagonals; (c) gap correction via `target_lambda`; (d) additive dd_max inflation `+ theta_gap / (1 - D^z)`. None produced a stable IBM population because the IBM-Leslie gap is population-size-dependent and nonlinear.
+
+✓ **FIX: IBM-based F bisection in `solve_F_sustainable()`** — Replaces the Leslie-only solve with a two-phase approach:
+  1. **Phase 1 (Leslie):** `uniroot()` on the Leslie matrix for a fast analytical starting estimate (`F_leslie`)
+  2. **Phase 2 (IBM):** A lightweight IBM simulation (`ibm_growth_rate()`) runs at `target_depletion` with DD + fishing + orphan mortality + individual calf tracking. Binary search over F finds the value where IBM growth ≈ 0. This gives `F_sustainable`, which is typically ~25% lower than `F_leslie`.
+  - `ibm_growth_rate()` is an internal (non-exported) helper in `create_stable_pop.R`. It runs a stripped-down IBM: survival, aging, orphan mortality, Markov breeding with calf coupling, DD conception, births — but no pods/superpods, no father tracking, no stickiness.
+  - Default IBM pop size for bisection: 50,000 (initialized at `target_depletion × pop_size`).
+  - If IBM simulation crashes (NA), falls back to Leslie estimate with a warning.
+✓ **Experimental analytical corrections reverted** — The dd_max inflation and target_lambda correction added Sep 9 AM have been removed. `dd_max` is now purely from `solve_dd_max()` (analytical, anchored to `target_interval`).
+✓ **Verified stable at D=0.3:** With eastern spinner defaults (Siler survival, pop_size=20K), the full pipeline produces:
+  - F_leslie = 0.0187, F_sustainable (IBM) = 0.0140
+  - IBM growth at F=0: +0.012/yr (surplus exists)
+  - 100-year post-burn-in trajectory: mean growth +0.0007/yr, last-50-year trend −0.0003/yr
+  - Depletion self-corrects to D ≈ 0.34 (slightly above target, absorbed by DD feedback)
+✓ **All 127 tests pass** (51 create_stable_pop, 55 simulate_pop, 21 sample_pop)
+
+---
+
 ## Known Issues / Open Questions
 
 1. **Residual s0 drift** — After fixes, the population shows a very slight drift (typically < ±0.03%/yr). This is within the convergence tolerance (0.001) and much improved from the old -0.06%/yr.
+2. **Leslie-vs-IBM gap (partially resolved)** — `solve_F_sustainable()` now uses IBM-based F bisection, which correctly accounts for IBM growth sinks. The remaining gap: the DD feedback self-corrects depletion to D ≈ 0.34 rather than exactly 0.30. This is acceptable — the population is stable, and at production scale (1.5M) the deviation should be smaller.
+3. **ibm_growth_rate() crashes with extreme test parameters** — The lightweight IBM helper returns NA for toy configs (max_age=4, litter_size=4) due to chaotic dynamics. `solve_F_sustainable()` falls back to Leslie in this case. Not a concern for realistic parameters.
 
 ---
 
 ## Next Steps
 
 1. **CKMR kin-pair identification** — Build a function to find parent-offspring, full-sibling, and half-sibling pairs in samples and compare to ground-truth pedigree
-4. **Sensitivity analysis** — Vary stickiness_set across a range and plot unique-sample yield per trip
-5. **Scaling test** — Run at 500K–1M individuals to benchmark performance and memory
-6. **End-to-end pipeline** — Connect `create.stable.pop()` → `simulate.pop()` → `sample.pop()` → CKMR validation
+2. **Sensitivity analysis** — Vary stickiness_set across a range and plot unique-sample yield per trip
+3. **Scaling test** — Run at 500K–1M individuals to benchmark performance and memory
+4. **End-to-end pipeline** — Connect `create.stable.pop()` → `simulate.pop()` → `sample.pop()` → CKMR validation
 
 ### Deferred Features
-- Length-based maturity/survival (partial implementation in legacy `helper_functions.R`)
+- Length-based maturity/survival
 - Multi-population structure with movement
 - `prime_bull_age` parameter for controlling strong bull election eligibility age
 - Rename package from "sharkyIBM"
+- Catch tracking (attribute individual deaths to natural vs fishing causes)
 
 ---
 
@@ -420,10 +512,10 @@ Deep dive explanations provided in conversation:
 ```
 sharkyIBM/
 ├── R/
-│   ├── create_stable_pop.R     [active — s0 calibration OR DD conception calibration + bundled config]
-│   ├── simulate_population.R   [active — IBM with burn-in + Markov breeding + DD + snapshots]
+│   ├── create_stable_pop.R     [active — s0/DD calibration + solve_F_sustainable()]
+│   ├── simulate_population.R   [active — IBM with burn-in + Markov breeding + DD + fishing + orphan mortality + snapshots]
 │   ├── sample_pop.R            [active — hierarchical sampling (trips/sets/stickiness)]
-│   ├── helper_functions.R      [legacy — not wired in; has length-based growth]
-│   ├── create_input_data.R     [parked — superseded]
-├── AGENTS.md                   [this file]
+│   ├── globals.R               [R CMD check variable declarations]
+├── docs/
+│   ├── AGENTS.md               [this file]
 ```

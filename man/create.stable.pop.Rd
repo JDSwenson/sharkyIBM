@@ -5,13 +5,16 @@
 \title{Create a stable population configuration for simulation}
 \usage{
 create.stable.pop(
-  max_age,
+  max_age = 40L,
   survival,
   pop_size,
-  maturity_age,
-  litter_size,
-  psi_nurse = 0.1,
-  psi_rest = 0.7,
+  maturity_age = 9L,
+  litter_size = 1,
+  rho = -3.255,
+  calving_interval = NULL,
+  suppression_ratio = 0.15,
+  psi_nurse = NULL,
+  psi_rest = NULL,
   num_mates = 1L,
   female_fraction = 0.5,
   infertility = 0,
@@ -20,11 +23,11 @@ create.stable.pop(
   stickiness_year = NULL,
   male_behavior = "random",
   max_females = NULL,
-  weaning_age = NULL,
+  weaning_age = 2L,
   density_dependence = FALSE,
   z_pt = 2.39,
   dd_max = NULL,
-  target_interval = NULL,
+  target_interval = 2.84,
   target_depletion = 0.3,
   check_interval = 10L,
   growth_tol = 0.001,
@@ -33,7 +36,8 @@ create.stable.pop(
 )
 }
 \arguments{
-\item{max_age}{Integer. Maximum age in the population. Individuals will breed at this age, but will be removed from the population before breeding again.}
+\item{max_age}{Integer. Maximum age in the population.  Default 40
+(eastern spinner dolphin longevity).}
 
 \item{survival}{Numeric vector of length \code{max_age + 1}. Annual survival
 probabilities for ages 0 through \code{max_age}.  When
@@ -42,9 +46,11 @@ will be replaced by the calibrated estimate.  When
 \code{density_dependence = TRUE}, all values including age-0 are used as
 supplied.}
 
-\item{pop_size}{Integer. Total starting population size. Equal to carrying capacity K when density dependence is active.}
+\item{pop_size}{Integer. Total starting population size. Equal to carrying
+capacity K when density dependence is active.}
 
-\item{maturity_age}{Maturity specification. Can be:
+\item{maturity_age}{Maturity specification. Default 9 (eastern spinner
+dolphin).  Can be:
 \itemize{
 \item An integer: knife-edged maturity at that age for both sexes.
 \item A numeric vector of length \code{max_age + 1}: cumulative
@@ -54,77 +60,112 @@ sexes.
 can be an integer or numeric vector as above.
 }}
 
-\item{litter_size}{Numeric. Mean litter size per breeding female.}
+\item{litter_size}{Numeric. Mean litter size per breeding female. Default 1.}
 
-\item{psi_nurse}{Numeric in [0, 1]. Conception probability while nursing
-a dependent calf (lactational suppression).  This is the suppressed rate;
-mothers whose calves die are released to \code{psi_rest}.}
+\item{rho}{Numeric.  Log-odds gap between nursing and resting conception:
+\code{logit(psi_nurse) - logit(psi_rest)}.  \strong{Only used when
+\code{density_dependence = TRUE}}, where it is the sole user-supplied
+quantity governing the breeding cycle shape.  Must be negative (nursing
+suppresses conception).  Default \code{-3.255}, derived from the ~2.9\\%
+of eastern spinner females found simultaneously pregnant and lactating
+(Chivers 1992).
 
-\item{psi_rest}{Numeric in [0, 1]. Conception probability while resting
-(no dependent calf), or after calf death.  Should be >= \code{psi_nurse}.}
+\strong{Why rho and not a probability ratio:} Density-dependent
+compensation shifts both \code{psi_nurse} and \code{psi_rest} by the
+same amount on the logit scale.  Under that transform, the log-odds gap
+(\code{rho}) is exactly invariant -- it means the same thing at every
+depletion level, including K.  A probability ratio (\code{psi_nurse /
+  psi_rest}) is NOT invariant: it drifts as both probabilities shift
+toward the boundaries.
 
-\item{num_mates}{Integer. Number of mates per female per breeding cycle.  Passed through to
-\code{simulate.pop()}.}
+\strong{Not used when \code{density_dependence = FALSE}.}  In that mode,
+use \code{calving_interval} + \code{suppression_ratio} or direct
+\code{psi_nurse}/\code{psi_rest} instead.}
 
-\item{female_fraction}{Numeric in (0, 1). Fraction of offspring that are female.}
+\item{calving_interval}{Numeric or NULL. Target calving interval in years
+(average time between successive births).  \strong{Only used when
+\code{density_dependence = FALSE}.}  When supplied, the function solves
+for the underlying conception probabilities (\code{psi_nurse},
+\code{psi_rest}) using \code{suppression_ratio} via \code{uniroot()} on
+the Markov breeding stationary distribution.  Must be >= 2 (structural
+floor: 1 year pregnancy + 1 year dependency).
 
-\item{infertility}{Numeric (scalar or length-2 vector \code{c(female, male)}). Proportion of permanently infertile individuals.  Default 0.}
+\strong{Cannot be used with \code{density_dependence = TRUE}.}  In DD
+mode, the calving interval at K is emergent from the equilibrium solve
+(the replacement constraint R0 = 1 pins the absolute conception level,
+and \code{rho} pins the shape).  To target an empirically observed
+calving interval, use \code{target_interval} + \code{target_depletion},
+which anchor compensation strength (\code{dd_max}) at the depletion
+where the interval was measured.}
+
+\item{suppression_ratio}{Numeric in (0, 1]. Ratio of conception probability
+while nursing to conception probability while resting
+(\code{psi_nurse / psi_rest}).  Controls the strength of lactational
+suppression.  Default 0.15.  \strong{Only used when
+\code{density_dependence = FALSE} and \code{calving_interval} is
+supplied.}}
+
+\item{psi_nurse}{Numeric in [0, 1] or NULL.  Conception probability while
+nursing a dependent calf (lactational suppression).  Supply together with
+\code{psi_rest} as an alternative to \code{calving_interval}.
+\strong{Only used when \code{density_dependence = FALSE}.}  Default NULL.}
+
+\item{psi_rest}{Numeric in [0, 1] or NULL.  Conception probability while
+resting (no dependent calf), or after calf death.  Should be >=
+\code{psi_nurse}.  Must be supplied together with \code{psi_nurse}.
+\strong{Only used when \code{density_dependence = FALSE}.}  Default NULL.}
+
+\item{num_mates}{Integer. Number of mates per female per breeding cycle.
+Passed through to \code{simulate.pop()}.}
+
+\item{female_fraction}{Numeric in (0, 1). Fraction of offspring that are
+female.  Default 0.5.}
+
+\item{infertility}{Numeric (scalar or length-2 vector \code{c(female,
+male)}). Proportion of permanently infertile individuals.  Default 0.}
 
 \item{pod_size}{Integer or NULL. Number of individuals per pod.}
 
 \item{superpod_size}{Integer or NULL. Number of pods per superpod.}
 
-\item{stickiness_year}{Numeric (scalar or length-2 vector \code{c(female, male)}) or NULL. Between-year superpod fidelity i.e., probability that individuals will switch superpods between simulation years.}
+\item{stickiness_year}{Numeric (scalar or length-2 vector
+\code{c(female, male)}) or NULL.  Between-year superpod fidelity, i.e.,
+probability that individuals remain in the same superpod between
+simulation years.}
 
 \item{male_behavior}{Character or NULL. \code{"random"} or
-\code{"strong_bull"}. "random" means that all mature males are eligible to mate with mature females from their superpod; "strong_bull" means that just one randomly selected male will be eligible to mate with mature females from their superpod. The "strong_bull" status will remain with the male who receives that designation until he dies, at which point another randomly selected male will take over as the strong bull for that superpod.}
+\code{"strong_bull"}.}
 
 \item{max_females}{Integer or NULL. Per-year cap on matings per male.}
 
 \item{weaning_age}{Integer or NULL. Age at independence from mother.  Also
 determines the maximum number of years a mother stays in the "with
-dependent calf" breeding state (S2).  If NULL, defaults to 1-year
-dependency for the breeding cycle (no cow-calf social following).}
+dependent calf" breeding state (S2).  Default 2 (calves dependent at
+ages 0 and 1, matching eastern spinner dolphin lactation of ~19 months).
+If NULL, defaults to 1-year dependency for the breeding cycle (no
+cow-calf social following).}
 
 \item{density_dependence}{Logical. If \code{TRUE}, use Pella--Tomlinson
 density dependence instead of s0 calibration.  Default \code{FALSE}.}
 
 \item{z_pt}{Numeric. Pella--Tomlinson shape parameter.  Default 2.39
-(IWC convention; MNPL at ~0.6 K).  Only used when
-\code{density_dependence = TRUE}. The default value for this parameter was modeled after cetaceans.}
+(IWC convention; MNPL at ~0.6 K).}
 
 \item{dd_max}{Numeric or NULL. Maximum logit-scale shift on conception
-probabilities at zero depletion (D -> 0).  Controls compensation strength.
-Larger values allow faster recovery from depletion.  When
-\code{density_dependence = TRUE}, supply either \code{dd_max} (direct) or
-\code{target_interval} (anchored), not both.
+probabilities at zero depletion.  Controls compensation strength.
+\strong{In most cases, leave NULL and use \code{target_interval} /
+\code{target_depletion} instead.}  Supplying \code{dd_max} directly
+bypasses the target-interval anchor and is intended for sensitivity
+analyses or theoretical runs.}
 
-\strong{In most cases, leave this \code{NULL} and use \code{target_interval}
-/ \code{target_depletion} instead.}  \code{dd_max} has no biologically
-meaningful default; a logit-scale shift is not something most users can
-reason about directly, and a plausible-looking value (e.g. 2) can be far
-too weak for a given life history (see \code{target_interval} below and
-the anchoring discussion in \code{@details}).  Supplying \code{dd_max}
-directly is intended for sensitivity analyses (sweeping compensation
-strength) or purely theoretical runs with no real calving-interval data
-to anchor to.  Supplying it will print a message recommending
-\code{target_interval} unless you are clearly running a sweep.}
-
-\item{target_interval}{Numeric or NULL. \strong{Recommended over
-\code{dd_max} for real species work.} Target calving interval in years at
-the reference depletion \code{target_depletion}.  When provided (and
-\code{density_dependence = TRUE}), the function solves for the
-\code{dd_max} that reproduces this interval, rather than requiring
-\code{dd_max} directly.  Must be >= 2 (structural floor: 1 year pregnancy
-\itemize{
-\item 1 year dependency) and shorter than the calving interval at carrying
-capacity K.  Anchoring to an empirically observed calving interval is far
-more defensible than guessing a logit-scale shift.
-}}
+\item{target_interval}{Numeric. Target calving interval in years at
+the reference depletion \code{target_depletion}.  Default 2.84 (eastern
+spinner pregnancy rate reciprocal, Chivers 1992).  Used to solve
+\code{dd_max} when \code{density_dependence = TRUE} and \code{dd_max}
+is NULL.  Must be >= 2 and shorter than the calving interval at K.}
 
 \item{target_depletion}{Numeric in (0, 1). Reference depletion level at
-which \code{target_interval} was observed.  Default 0.3 (30\\% of K).
-Only used when \code{target_interval} is provided.}
+which \code{target_interval} was observed.  Default 0.3 (30\\% of K).}
 
 \item{check_interval}{Integer. Years per assessment window. Default 10.}
 
@@ -149,193 +190,71 @@ user supplies a survival vector with a placeholder for s0, and this
 function finds the value that balances births and deaths.
 \item \strong{Density dependence} (\code{density_dependence = TRUE}):
 The user supplies a complete, realistic survival curve (including s0),
-and the function bisects a logit-scale offset on the conception
-probabilities (\code{psi_nurse}, \code{psi_rest}) until the population is
-stable at carrying capacity K.  In \code{simulate.pop()}, a
-Pella--Tomlinson compensation mechanism then adjusts conception rates
-dynamically based on depletion.
+and the function solves for the conception level (\code{theta}, the
+logit of \code{psi_rest}) that makes the population stable at carrying
+capacity K.  The conception gap between nursing and resting states is
+set by \code{rho} (log-odds ratio), which is invariant to the density-
+dependent shift.  In \code{simulate.pop()}, a Pella--Tomlinson
+compensation mechanism then adjusts conception rates dynamically based
+on depletion.
 }
 }
 \details{
 Both modes use a two-phase approach:
 \enumerate{
 \item \strong{Leslie matrix} -- analytically solves for the starting
-estimate (s0 or theta_shift).
+estimate (s0 or theta).
 \item \strong{Iterative simulation} -- refines via bisection until
 convergence.
 }
 \subsection{Calibration Modes}{
 
-\strong{s0 calibration} (\code{density_dependence = FALSE}, default): This function
-searches for the age-0 survival rate (s0) that results in a stable population.
-The user provides a complete survival vector with any placeholder value for age 0;
-this function replaces it with the calibrated estimate.  The algorithm uses a
-two-phase approach:
-\enumerate{
-\item Leslie matrix analytically estimates the starting s0 (or gives a bounds
-check for the bisection).
-\item Bisection iteratively refines s0 over assessment windows of
-\code{check_interval} years until population growth is near zero
-(\code{|r| < growth_tol}) for \code{stable_required} consecutive windows.
-}
-The Leslie matrix fecundity row uses a corrected maturity ogive (shifted right
-by one year) so that newly mature females contribute zero fecundity at their
-first mature age, matching the IBM behavior.
+\strong{s0 calibration} (\code{density_dependence = FALSE}, default): Searches for
+the age-0 survival rate (s0) that results in a stable population.  The user
+provides a survival vector with any placeholder for age 0; this function
+replaces it with the calibrated estimate.
 
-\strong{Density dependence mode} (\code{density_dependence = TRUE}): Instead of
-calibrating s0, the user supplies a complete, empirically-informed survival
-curve (including age-0) and this function calibrates a logit-scale offset
-(\code{theta_shift}) on conception rates (\code{psi_nurse}, \code{psi_rest}).
-The result is a population that is stable at carrying capacity K, with
-Pella-Tomlinson compensation active in \code{simulate.pop()}.  Outputs include
-\code{theta_shift}, \code{theta_shift_leslie} (analytical), \code{psi_nurse_K},
-\code{psi_rest_K} (reference conception rates at K).  The calibration solves
-for the offset that makes lambda(K) = 1 (growth rate at carrying capacity = 1).
+\strong{Density dependence mode} (\code{density_dependence = TRUE}): The user
+supplies a complete survival curve (including s0) and \code{rho} (the
+log-odds gap between nursing and resting conception).  The function solves
+for \code{theta} (logit of psi_rest at K) such that R0 = 1 (replacement),
+then derives \code{psi_nurse_K} and \code{psi_rest_K}.  The calving interval
+at K is \strong{emergent} -- it falls out from the equilibrium solve and
+\code{rho}, and is NOT directly settable.
+
+To target an empirically measured calving interval (e.g., 2.84 yr from
+Chivers 1992), use \code{target_interval} + \code{target_depletion}.
+These anchor \code{dd_max} (compensation strength) so the model reproduces
+the target interval at the stated depletion -- the depletion at which the
+data was actually collected, NOT at K.
 }
 
-\subsection{Two-Phase Approach}{
+\subsection{Breeding Cycle Parameterization}{
 
-\strong{Phase 1: Leslie matrix} (analytical estimate)
-Constructs an age-structured Leslie matrix based on the stable age distribution
-and fecundity. Computes the dominant eigenvalue (growth rate lambda) and
-extracts the stable age distribution. Uses this to estimate the starting s0
-(or theta_shift) for bisection.  The Leslie matrix is built using:
+\strong{DD = TRUE:}
 \itemize{
-\item Survival probabilities from the \code{survival} input (or a trial value
-for s0/theta_shift in DD mode).
-\item Fecundity = (maturity ogive) * (breeding stationary proportion) * (litter_size).
-\item For s0 calibration: solves analytically for s0 that makes lambda = 1.
-\item For DD: uses uniroot to find theta_shift that makes lambda = 1.
+\item Supply \code{rho} (default \code{-3.255}).  This is the sole
+user-supplied breeding-cycle quantity.  \code{theta} (the absolute
+level) is solved for replacement at K.
+\item \code{psi_nurse = inv_logit(theta + rho)},
+\code{psi_rest = inv_logit(theta)}.
+\item Calving interval at K is emergent.
+\item To target an observed interval, use \code{target_interval}.
 }
 
-\strong{Phase 2: Iterative bisection} (refinement via simulation)
-The Leslie estimate (or bounds) seed a bisection search. The algorithm:
-\enumerate{
-\item Runs \code{check_interval} years of simulation at the current candidate
-s0 (or theta_shift).
-\item Assesses population growth rate r over the window.
-\item If r > \code{growth_tol}: s0 is too high (or theta_shift too high);
-bisect down.
-\item If r < \code{-growth_tol}: s0 is too low (or theta_shift too low);
-bisect up.
-\item If \code{|r| < growth_tol}: window is stable; increment stable counter.
-\item Continues until \code{stable_required} consecutive stable windows occur,
-or \code{max_windows} is reached (safety limit).
-}
-Total calibration time is typically 100--220 years. Default tolerances
-(\code{check_interval = 10}, \code{growth_tol = 0.001}, \code{stable_required = 5})
-balance precision and computational cost.
-}
-
-\subsection{Initial Population Structure}{
-
-The initial population is sampled from the Leslie-stable age distribution.
-Every individual is assigned:
+\strong{DD = FALSE:}
 \itemize{
-\item A unique ID (1, 2, ..., pop_size).
-\item Sex: Bernoulli(female_fraction).
-\item Age: Drawn from stable age distribution.
-\item Maturity age (\code{mat_age}): Drawn from maturity ogive PMF at birth.
-Later, the individual matures when calendar age >= mat_age.
-\item Fertility: Bernoulli(1 - infertility); if infertile, the individual
-never breeds.
-\item Pod and superpod: Assigned deterministically from fixed mapping,
-starting with pod 1 to superpod 1, pod 2 to superpod 1, etc.
-\item Breeding state (for females): S1, S2, or S3, drawn from the breeding
-stationary distribution. S2 females are assigned a placeholder calf (age 0,
-sex random, generated on the fly).
-\item mother_id = 0, father_id = 0 (founders; marked for later flush).
+\item Path A: supply \code{calving_interval} + \code{suppression_ratio}.
+Solves for \code{psi_nurse}/\code{psi_rest} via \code{uniroot()}.
+\item Path B: supply \code{psi_nurse} + \code{psi_rest} directly.
 }
-}
-
-\subsection{Markov Breeding Cycle}{
-
-The function uses a numerically-derived Markov breeding stationary distribution
-to initialize and reason about breeding state proportions. The breeding cycle
-is parameterized by:
-\itemize{
-\item \code{psi_nurse}, \code{psi_rest}: Conception rates while nursing vs.
-resting.
-\item \code{weaning_age}: Maximum years an S2 mother stays with her calf
-(default 1 if NULL).
-}
-The stationary distribution is computed from a Markov transition matrix built
-by \code{breeding_stationary()} helper, accounting for calf survival rates. In
-\code{simulate.pop()}, this ratio between conception states drives the actual
-age-specific birth rates.
 }
 
 \subsection{Social Structure Initialization}{
 
 Pods and superpods are created deterministically during initialization. If
-\code{pod_size = 20} and \code{superpod_size = 10}, then:
-\itemize{
-\item Pods 1--10 belong to superpod 1.
-\item Pods 11--20 belong to superpod 2.
-\item Etc.
-}
-This mapping is stored in the \code{pod_to_sp} vector and passed to
-\code{simulate.pop()} and \code{sample.pop()}.
-}
-
-\subsection{Mating and Fertility}{
-
-The function sets up the framework for \code{simulate.pop()} to handle mating:
-\itemize{
-\item \code{num_mates}: Number of males each female mates with.
-\item \code{male_behavior}: "random" (polyandry from superpod pool) or
-"strong_bull" (one persistent male per superpod).
-\item \code{max_females}: Per-year cap on a male's mating partners (prevents
-monopolization).
-\item \code{infertility}: Proportion of infertile individuals (same or
-sex-specific). Infertile females never breed; infertile males are excluded
-from mating pools.
-}
-}
-
-\subsection{Density Dependence Parameters}{
-
-When \code{density_dependence = TRUE}, the function calibrates:
-\itemize{
-\item \code{theta_shift}: Logit-scale offset on conception rates that achieves
-stability at K.
-\item \code{psi_nurse_K}, \code{psi_rest_K}: Reference conception rates at K
-(shifted by theta_shift from user inputs).
-\item \code{z_pt}: Pella-Tomlinson shape (default 2.39, IWC convention places
-MNPL at 0.6K).
-\item \code{dd_max}: Maximum logit shift at zero depletion (controls
-compensation strength). Either supplied directly or solved from
-\code{target_interval}.
-}
-
-\strong{Anchoring dd_max to a target calving interval (recommended):} Rather
-than choosing \code{dd_max} directly, supply \code{target_interval}
-(observed calving interval in years) and \code{target_depletion} (the
-depletion level at which that interval was observed).  After the
-theta_shift calibration finds the at-K conception rates
-(\code{psi_nurse_K}, \code{psi_rest_K}), the function solves for the
-\code{dd_max} that reproduces the target interval at the reference
-depletion using \code{uniroot()}.  This is far more principled than
-choosing \code{dd_max} directly, because:
-\itemize{
-\item Users can reason about calving intervals more intuitively than
-logit-scale shift magnitudes -- \code{dd_max} has no biologically
-meaningful default value.
-\item The anchored value is species-specific and grounded in empirical
-demographic data, rather than guessed.
-\item Plausible-looking placeholder values (e.g., dd_max = 2) can be far
-too weak for a given species' life history, producing a population
-that cannot recover from depletion.
-}
-\strong{In most cases, leave \code{dd_max = NULL} and use
-\code{target_interval} / \code{target_depletion} instead.}  Supplying
-\code{dd_max} directly is intended for sensitivity analyses (e.g., sweeping
-compensation strength across several values) or theoretical runs with no
-empirical calving-interval data to anchor to; a message is printed
-whenever \code{dd_max} is supplied directly, as a reminder.
-
-In \code{simulate.pop()}, depletion D(t) = N_1+(t) / K_1+ is computed each year,
-and conception rates are shifted as psi(t) = psi_K + delta_max * \code{[1 - D(t)^z]}.
+\code{pod_size = 20} and \code{superpod_size = 10}, then pods 1--10 belong
+to superpod 1, pods 11--20 to superpod 2, etc.
 }
 
 \subsection{Output Structure}{
@@ -343,29 +262,23 @@ and conception rates are shifted as psi(t) = psi_K + delta_max * \code{[1 - D(t)
 The returned list bundles all parameters needed by \code{simulate.pop()},
 including:
 \itemize{
-\item \strong{Calibration results}: \code{s0} (or \code{theta_shift}),
-\code{s0_leslie}, \code{final_N}, \code{years_simulated}.
-\item \strong{Life history}: \code{max_age}, \code{survival}, \code{litter_size}.
-\item \strong{Demographics}: \code{pop_size}, \code{female_fraction},
-\code{maturity_age}, \code{infertility}.
+\item \strong{Calibration results}: \code{s0} (or \code{theta}),
+\code{final_N}, \code{years_simulated}.
+\item \strong{Life history}: \code{max_age}, \code{survival},
+\code{litter_size}.
 \item \strong{Breeding}: \code{psi_nurse}, \code{psi_rest},
-\code{num_mates}, \code{male_behavior}, \code{max_females},
-\code{weaning_age}.
-\item \strong{Social}: \code{pod_size}, \code{superpod_size},
-\code{stickiness_year}, \code{pod_to_sp}.
-\item \strong{DD (if active)}: \code{density_dependence = TRUE},
-\code{theta_shift}, \code{theta_shift_leslie}, \code{psi_nurse_K},
-\code{psi_rest_K}, \code{z_pt}, \code{dd_max}, \code{K_1plus},
-\code{target_interval}, \code{target_depletion} (if anchored).
+\code{num_mates}, \code{weaning_age}.
+\item \strong{DD (if active)}: \code{theta}, \code{rho},
+\code{psi_nurse_K}, \code{psi_rest_K}, \code{z_pt}, \code{dd_max},
+\code{K_1plus}, \code{target_interval}, \code{target_depletion}.
 }
 }
 }
 \references{
-Caswell, H. (2001). Matrix Population Models: Construction, Analysis, and
-Interpretation (2nd ed.). Sinauer Associates.
+Caswell, H. (2001). Matrix Population Models (2nd ed.). Sinauer Associates.
 
 Pella, J. J., & Tomlinson, P. K. (1973). A generalized stock production
-model. Inter-American Tropical Tuna Commission Bulletin, 13, 422-458.
+model. IATTC Bulletin, 13, 422-458.
 
 Barlow, J., & Boveng, P. (1991). Modeling age-specific mortality for marine
 mammal populations. Marine Mammal Science, 7(1), 50-65.

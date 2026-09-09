@@ -94,16 +94,17 @@ test_that("errors when weaning_age exceeds max_age", {
   expect_error(do.call(create.stable.pop, a), "weaning_age")
 })
 
-test_that("density_dependence = TRUE requires dd_max", {
-  a <- base_args(); a$density_dependence <- TRUE
-  expect_error(do.call(create.stable.pop, a), "dd_max")
+test_that("density_dependence = TRUE rejects calving_interval", {
+  a <- base_args()
+  a$psi_nurse <- NULL; a$psi_rest <- NULL
+  a$density_dependence <- TRUE
+  a$calving_interval <- 3.5
+  expect_error(do.call(create.stable.pop, a), "calving_interval.*density_dependence")
 })
 
-test_that("density_dependence = TRUE rejects psi values of exactly 0 or 1", {
+test_that("density_dependence = TRUE rejects psi_nurse/psi_rest", {
   a <- base_args()
   a$density_dependence <- TRUE
-  a$dd_max <- 3
-  a$psi_nurse <- 0
   expect_error(do.call(create.stable.pop, a), "psi_nurse.*psi_rest|density_dependence")
 })
 
@@ -189,11 +190,15 @@ test_that("DD calibration returns a well-formed config", {
   cfg <- quick_config_dd()
 
   expect_true(cfg$density_dependence)
-  expect_true(is.na(cfg$s0_leslie))
-  expect_true(is.numeric(cfg$theta_shift))
+  expect_true(is.numeric(cfg$theta))
+  expect_true(is.numeric(cfg$rho))
+  expect_true(cfg$rho < 0)
   expect_true(cfg$psi_nurse_K > 0 && cfg$psi_nurse_K < 1)
   expect_true(cfg$psi_rest_K  > 0 && cfg$psi_rest_K  < 1)
   expect_true(cfg$K_1plus > 0)
+  # psi_nurse/psi_rest equal at-K values in DD mode
+  expect_equal(cfg$psi_nurse, cfg$psi_nurse_K)
+  expect_equal(cfg$psi_rest, cfg$psi_rest_K)
   # Survival is used as-supplied in DD mode (not recalibrated)
   expect_equal(cfg$survival, c(0.55, rep(0.8, 4)))
   expect_equal(cfg$s0, 0.55)

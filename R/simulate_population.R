@@ -25,6 +25,35 @@
 #'       counting from the start of burn-in).
 #'     \item NULL: no snapshots (but then why are you running this?).
 #'   }
+#' @param F_t Fishing mortality schedule for post-burn-in years (or all years
+#'   when \code{init_depletion} is set).  Instantaneous rate, combined with
+#'   natural mortality as a competing hazard:
+#'   \code{S_total(a) = survival[a] * exp(-F * selectivity[a])}.
+#'   \itemize{
+#'     \item NULL (default): no fishing.  Existing behavior unchanged.
+#'     \item Scalar: constant F applied every year.
+#'     \item Numeric vector of length \code{num_years}: year-specific F.
+#'   }
+#'   When \code{init_depletion} is set, fishing also applies during the burn-in
+#'   to maintain the depleted state.
+#' @param selectivity Numeric vector of length \code{max_age + 1}, values in
+#'   \code{[0, 1]}.  Age-specific vulnerability to the fishery.  Required when
+#'   \code{F_t} is non-NULL.  A typical choice is \code{c(0, rep(1, max_age))}
+#'   (flat on ages 1+, age-0 excluded).
+#' @param init_depletion Numeric in (0, 1], or NULL.  Controls the initial
+#'   population state:
+#'   \itemize{
+#'     \item NULL or 1 (default): initialise at \code{pop_size} with the
+#'       unfished stable age distribution.  Fishing applies only during
+#'       post-burn-in years.
+#'     \item Value in (0, 1): initialise at
+#'       \code{init_depletion * pop_size} individuals using the \strong{fished}
+#'       stable age distribution (younger-skewed, matching decades of sustained
+#'       fishing).  Fishing applies from year 1 (including burn-in) to maintain
+#'       the depleted state.  This avoids simulating the full carrying capacity
+#'       and eliminates the fishing-down transient.
+#'   }
+#'   Requires \code{density_dependence = TRUE} and \code{F_t} to be non-NULL.
 #'
 #' @details
 #'
@@ -68,7 +97,11 @@
 #' **psi_nurse, psi_rest:** Conception probabilities in the Markov breeding
 #' cycle.  Mothers in state S2 (with dependent calf) have conception probability
 #' \code{psi_nurse} if the calf is alive, or \code{psi_rest} if the calf has
-#' died. When \code{density_dependence = TRUE}, these values are adjusted during
+#' died.  These values are either supplied directly to
+#' \code{create.stable.pop()} (legacy) or solved from
+#' \code{calving_interval} + \code{suppression_ratio} (DD=FALSE mode)
+#' or \code{rho} (DD=TRUE mode).
+#' When \code{density_dependence = TRUE}, these values are adjusted during
 #' calibration to \code{psi_nurse_K}, \code{psi_rest_K} (reference values at
 #' carrying capacity K).  During the simulation, when density dependence is
 #' active, conception rates are shifted on the logit scale based on depletion
@@ -234,7 +267,10 @@
 #' @rawNamespace export(simulate.pop)
 simulate.pop <- function(sim_config,
                          num_years,
-                         sample_years = NULL) {
+                         sample_years = NULL,
+                         F_t = NULL,
+                         selectivity = NULL,
+                         init_depletion = NULL) {
 
   # ═══════════════════════════════════════════════════════════════════════════
   # INPUT VALIDATION
@@ -258,6 +294,40 @@ simulate.pop <- function(sim_config,
 
   if (!is.null(sample_years) && !is.numeric(sample_years))
     stop("`sample_years` must be NULL, a positive integer, or an integer vector.")
+
+  # ── Fishing mortality validation ──
+  use_fishing <- !is.null(F_t)
+  if (use_fishing) {
+    if (is.null(selectivity))
+      stop("`selectivity` is required when `F_t` is supplied.")
+    if (!is.numeric(F_t))
+      stop("`F_t` must be numeric (scalar or vector of length `num_years`).")
+    if (any(F_t < 0))
+      stop("`F_t` values must be >= 0.")
+    if (length(F_t) != 1L && length(F_t) != num_years)
+      stop("`F_t` must be a scalar or a vector of length `num_years` (",
+           num_years, "). Got length ", length(F_t), ".")
+  }
+  if (!is.null(selectivity)) {
+    if (!is.numeric(selectivity))
+      stop("`selectivity` must be a numeric vector.")
+    if (any(selectivity < 0 | selectivity > 1))
+      stop("`selectivity` values must be between 0 and 1.")
+    # Length check deferred until max_age is extracted
+  }
+
+  # ── init_depletion validation ──
+  use_init_depletion <- !is.null(init_depletion) && init_depletion < 1
+  if (use_init_depletion) {
+    if (!is.numeric(init_depletion) || length(init_depletion) != 1L ||
+        init_depletion <= 0 || init_depletion > 1)
+      stop("`init_depletion` must be a single number in (0, 1].")
+    if (!isTRUE(sim_config$density_dependence))
+      stop("`init_depletion` requires `density_dependence = TRUE`.")
+    if (!use_fishing)
+      stop("`init_depletion` requires `F_t` (otherwise the population ",
+           "recovers to K immediately).")
+  }
 
   # ═══════════════════════════════════════════════════════════════════════════
   # EXTRACT PARAMETERS FROM sim_config
@@ -330,6 +400,35 @@ simulate.pop <- function(sim_config,
   }
 
   surv_vec <- survival
+
+  # ── Fishing mortality schedule ──
+  if (use_fishing) {
+    sel_vec <- selectivity
+    if (length(sel_vec) != max_age + 1L)
+      stop("`selectivity` must have length max_age + 1 (", max_age + 1L,
+           "). Got length ", length(sel_vec), ".")
+
+    # Expand scalar F_t to a post-burn-in vector
+    if (length(F_t) == 1L) {
+      F_t_post <- rep(F_t, num_years)
+      F_scalar <- F_t
+    } else {
+      F_t_post <- F_t
+      F_scalar <- F_t[1]
+    }
+
+    # Build F_schedule covering all years (burn-in + post-burn-in)
+    if (use_init_depletion) {
+      # Fishing active throughout (maintain depleted state during burn-in)
+      F_schedule <- c(rep(F_scalar, burn_in), F_t_post)
+    } else {
+      # Fishing only during post-burn-in
+      F_schedule <- c(rep(0, burn_in), F_t_post)
+    }
+  } else {
+    sel_vec    <- rep(0, max_age + 1L)
+    F_schedule <- rep(0, total_years)
+  }
 
   # ── Parse sex-specific stickiness_year ──
   if (!is.null(stickiness_year)) {
@@ -439,6 +538,43 @@ simulate.pop <- function(sim_config,
   w_eig    <- Mod(eigen(A)$vectors[, 1])
   stable_A <- w_eig / sum(w_eig)
 
+  # ── Depleted initialization: fished stable age distribution ──
+  if (use_init_depletion) {
+    # DD-shifted conception rates at init_depletion
+    shift_init     <- dd_max * (1 - init_depletion^z_pt)
+    psi_nurse_dep  <- plogis(logit_psi_nurse_K + shift_init)
+    psi_rest_dep   <- plogis(logit_psi_rest_K  + shift_init)
+
+    # Fished survival
+    surv_fished <- survival * exp(-F_scalar * sel_vec)
+
+    # Rebuild Leslie with fished survival and DD-shifted fecundity
+    A_dep <- matrix(0, n_classes, n_classes)
+    pi_stat_dep <- breeding_stationary(psi_nurse_dep, psi_rest_dep,
+                                        surv_fished, wa_breed)
+    pi_1_dep <- pi_stat_dep[1]
+    ff_dep   <- litter_size * female_fraction * pi_1_dep * (1 - infertility_f)
+    A_dep[1, ] <- ogive_f_leslie * ff_dep
+    for (i in seq_len(max_age)) A_dep[i + 1L, i] <- surv_fished[i]
+
+    w_dep    <- Mod(eigen(A_dep)$vectors[, 1])
+    stable_A <- w_dep / sum(w_dep)
+
+    # Override breeding stats for initialization
+    psi_nurse_init <- psi_nurse_dep
+    psi_rest_init  <- psi_rest_dep
+    pi_stat        <- pi_stat_dep
+    n_breed_states <- length(pi_stat)
+
+    # Scale population size (K_1plus stays as unfished reference)
+    pop_size <- round(pop_size * init_depletion)
+
+    message(sprintf(
+      "Depleted initialization: D = %.2f, N0 = %s (fished age structure)",
+      init_depletion, format(pop_size, big.mark = ",")
+    ))
+  }
+
   # ═══════════════════════════════════════════════════════════════════════════
   # INITIALISE POPULATION
   # ═══════════════════════════════════════════════════════════════════════════
@@ -536,8 +672,9 @@ simulate.pop <- function(sim_config,
   # MAIN SIMULATION LOOP
   # ═══════════════════════════════════════════════════════════════════════════
   # Each iteration = one year.  The order of operations:
-  #   1. Survival (stochastic; each individual survives independently)
+  #   1. Survival (stochastic; natural + fishing as competing hazard)
   #   2. Aging (deterministic; survivors age by one year)
+  #  2b. Orphan mortality (dependent calves whose mothers died or aged out)
   #   3. Between-year superpod reshuffling + cow-calf following
   #   4. Density-dependent conception adjustment (if DD active)
   #   5. Markov breeding state transitions (calf-survival-dependent)
@@ -547,15 +684,34 @@ simulate.pop <- function(sim_config,
 
   for (yr in seq_len(total_years)) {
 
-    # ─── 1 & 2. Survival + aging ─────────────────────────────────────────
-    rates <- surv_vec[pop$age + 1L]
+    # ─── 1. Survival (natural + fishing) ─────────────────────────────────
+    if (use_fishing && F_schedule[yr] > 0) {
+      # Competing hazard: S_total = exp(-M) * exp(-F*sel) = exp(-(M + F*sel))
+      rates <- surv_vec[pop$age + 1L] *
+        exp(-F_schedule[yr] * sel_vec[pop$age + 1L])
+    } else {
+      rates <- surv_vec[pop$age + 1L]
+    }
     alive <- runif(nrow(pop)) <= rates
     pop   <- pop[alive]
 
+    # ─── 2. Aging ─────────────────────────────────────────────────────
     set(pop, j = "age", value = pop$age + 1L)
     pop <- pop[pop$age <= max_age]
 
     if (nrow(pop) == 0L) stop("Population went extinct in year ", yr, ".")
+
+    # ─── 2b. Orphan mortality: dependent calves die if mother dies ────
+    # Placed AFTER aging + max_age removal so that mothers who age out
+    # also trigger orphan mortality. Uses age <= weaning_age (post-aging)
+    # to catch calves that were 0..(weaning_age-1) before aging.
+    if (use_weaning) {
+      dep_idx <- which(pop$age <= weaning_age & pop$mother_id != 0L)
+      if (length(dep_idx) > 0L) {
+        orphans <- dep_idx[!pop$mother_id[dep_idx] %in% pop$id]
+        if (length(orphans) > 0L) pop <- pop[-orphans]
+      }
+    }
 
     # ─── 3. Between-year superpod reshuffling + cow-calf following ───────
     if (use_pods && !is.null(stickiness_year)) {
@@ -904,5 +1060,9 @@ simulate.pop <- function(sim_config,
     sim_config  = sim_config
   )
   if (use_dd) out$depletion <- depletion_vec
+  if (use_fishing) {
+    out$F_t          <- F_t
+    out$selectivity  <- sel_vec
+  }
   invisible(out)
 }

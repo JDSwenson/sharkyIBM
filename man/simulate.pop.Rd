@@ -4,7 +4,14 @@
 \alias{simulate.pop}
 \title{Simulate an age-structured population and store snapshots for sampling}
 \usage{
-\method{simulate}{pop}(sim_config, num_years, sample_years = NULL)
+\method{simulate}{pop}(
+  sim_config,
+  num_years,
+  sample_years = NULL,
+  F_t = NULL,
+  selectivity = NULL,
+  init_depletion = NULL
+)
 }
 \arguments{
 \item{sim_config}{List returned by \code{create.stable.pop()}.  Contains all
@@ -20,6 +27,38 @@ the simulation.
 counting from the start of burn-in).
 \item NULL: no snapshots (but then why are you running this?).
 }}
+
+\item{F_t}{Fishing mortality schedule for post-burn-in years (or all years
+when \code{init_depletion} is set).  Instantaneous rate, combined with
+natural mortality as a competing hazard:
+\code{S_total(a) = survival[a] * exp(-F * selectivity[a])}.
+\itemize{
+\item NULL (default): no fishing.  Existing behavior unchanged.
+\item Scalar: constant F applied every year.
+\item Numeric vector of length \code{num_years}: year-specific F.
+}
+When \code{init_depletion} is set, fishing also applies during the burn-in
+to maintain the depleted state.}
+
+\item{selectivity}{Numeric vector of length \code{max_age + 1}, values in
+\code{[0, 1]}.  Age-specific vulnerability to the fishery.  Required when
+\code{F_t} is non-NULL.  A typical choice is \code{c(0, rep(1, max_age))}
+(flat on ages 1+, age-0 excluded).}
+
+\item{init_depletion}{Numeric in (0, 1], or NULL.  Controls the initial
+population state:
+\itemize{
+\item NULL or 1 (default): initialise at \code{pop_size} with the
+unfished stable age distribution.  Fishing applies only during
+post-burn-in years.
+\item Value in (0, 1): initialise at
+\code{init_depletion * pop_size} individuals using the \strong{fished}
+stable age distribution (younger-skewed, matching decades of sustained
+fishing).  Fishing applies from year 1 (including burn-in) to maintain
+the depleted state.  This avoids simulating the full carrying capacity
+and eliminates the fishing-down transient.
+}
+Requires \code{density_dependence = TRUE} and \code{F_t} to be non-NULL.}
 }
 \value{
 A named list (returned invisibly):
@@ -86,7 +125,11 @@ males).
 \strong{psi_nurse, psi_rest:} Conception probabilities in the Markov breeding
 cycle.  Mothers in state S2 (with dependent calf) have conception probability
 \code{psi_nurse} if the calf is alive, or \code{psi_rest} if the calf has
-died. When \code{density_dependence = TRUE}, these values are adjusted during
+died.  These values are either supplied directly to
+\code{create.stable.pop()} (legacy) or solved from
+\code{calving_interval} + \code{suppression_ratio} (DD=FALSE mode)
+or \code{rho} (DD=TRUE mode).
+When \code{density_dependence = TRUE}, these values are adjusted during
 calibration to \code{psi_nurse_K}, \code{psi_rest_K} (reference values at
 carrying capacity K).  During the simulation, when density dependence is
 active, conception rates are shifted on the logit scale based on depletion

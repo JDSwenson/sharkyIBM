@@ -147,3 +147,127 @@ test_that("non-DD simulation does not return a depletion vector", {
   sim <- quick_sim(cfg, num_years = 5)
   expect_false("depletion" %in% names(sim))
 })
+
+# ── Fishing mortality ──────────────────────────────────────────────────
+
+test_that("F_t = NULL produces no fishing output (backward compatibility)", {
+  cfg <- quick_config_dd()
+  sim <- quick_sim(cfg, num_years = 5)
+  expect_false("F_t" %in% names(sim))
+  expect_false("selectivity" %in% names(sim))
+})
+
+test_that("scalar F_t is accepted and returned in output", {
+  cfg <- quick_config_dd()
+  sel <- c(0, rep(1, cfg$max_age))
+  sim <- quick_sim(cfg, num_years = 5, F_t = 0.01, selectivity = sel)
+  expect_true("F_t" %in% names(sim))
+  expect_true("selectivity" %in% names(sim))
+  expect_equal(sim$F_t, 0.01)
+})
+
+test_that("fishing reduces population size vs no fishing", {
+  cfg <- quick_config_dd()
+  sel <- c(0, rep(1, cfg$max_age))
+  sim_nof <- quick_sim(cfg, num_years = 10, seed = 1111)
+  sim_f   <- quick_sim(cfg, num_years = 10, seed = 1111,
+                        F_t = 0.05, selectivity = sel)
+  # Fished population should be smaller
+  final_nof <- sim_nof$pop_summary[year == max(year), sum(N)]
+  final_f   <- sim_f$pop_summary[year == max(year), sum(N)]
+  expect_lt(final_f, final_nof)
+})
+
+test_that("errors on wrong-length F_t vector", {
+  cfg <- quick_config_dd()
+  sel <- c(0, rep(1, cfg$max_age))
+  expect_error(
+    simulate.pop(cfg, num_years = 5, F_t = c(0.01, 0.02), selectivity = sel),
+    "F_t.*length"
+  )
+})
+
+test_that("errors when F_t supplied without selectivity", {
+  cfg <- quick_config_dd()
+  expect_error(
+    simulate.pop(cfg, num_years = 5, F_t = 0.01),
+    "selectivity.*required"
+  )
+})
+
+test_that("errors on negative F_t", {
+  cfg <- quick_config_dd()
+  sel <- c(0, rep(1, cfg$max_age))
+  expect_error(
+    simulate.pop(cfg, num_years = 5, F_t = -0.1, selectivity = sel),
+    "F_t.*>= 0"
+  )
+})
+
+test_that("errors on selectivity out of [0, 1]", {
+  cfg <- quick_config_dd()
+  expect_error(
+    simulate.pop(cfg, num_years = 5, F_t = 0.01, selectivity = rep(1.5, cfg$max_age + 1)),
+    "selectivity.*0 and 1"
+  )
+})
+
+# ── Depleted initialization ───────────────────────────────────────────
+
+test_that("init_depletion reduces initial population size", {
+  cfg <- quick_config_dd()
+  sel <- c(0, rep(1, cfg$max_age))
+  sim <- quick_sim(cfg, num_years = 5, F_t = 0.01, selectivity = sel,
+                    init_depletion = 0.5)
+  first_N <- sim$pop_summary[year == 1, sum(N)]
+  expect_lt(first_N, cfg$pop_size)
+})
+
+test_that("init_depletion requires DD = TRUE", {
+  cfg <- quick_config()
+  sel <- c(0, rep(1, cfg$max_age))
+  expect_error(
+    simulate.pop(cfg, num_years = 5, F_t = 0.01, selectivity = sel,
+                 init_depletion = 0.5),
+    "density_dependence.*TRUE"
+  )
+})
+
+test_that("init_depletion requires F_t", {
+  cfg <- quick_config_dd()
+  expect_error(
+    simulate.pop(cfg, num_years = 5, init_depletion = 0.5),
+    "init_depletion.*F_t"
+  )
+})
+
+# ── Orphan mortality ──────────────────────────────────────────────────
+
+test_that("no orphaned dependent calves survive in snapshots", {
+  cfg <- quick_config_pods(weaning_age = 2L)
+  sim <- quick_sim(cfg, num_years = 10, sample_years = 3)
+  for (snap in sim$snapshots) {
+    wa <- cfg$weaning_age
+    dep <- snap[age <= wa & mother_id != 0L]
+    if (nrow(dep) > 0L) {
+      orphans <- dep[!mother_id %in% snap$id]
+      expect_equal(nrow(orphans), 0L)
+    }
+  }
+})
+
+# ── solve_F_sustainable ───────────────────────────────────────────────
+
+test_that("solve_F_sustainable returns positive F for DD config", {
+  cfg <- quick_config_dd()
+  result <- suppressMessages(suppressWarnings(solve_F_sustainable(cfg)))
+  expect_true(result$F_sustainable > 0)
+  expect_true(result$F_leslie > 0)
+  expect_true(result$interval_at_equilibrium > 0)
+  expect_equal(length(result$stable_age_fished), cfg$max_age + 1)
+})
+
+test_that("solve_F_sustainable errors on DD = FALSE config", {
+  cfg <- quick_config()
+  expect_error(solve_F_sustainable(cfg), "density_dependence.*TRUE")
+})

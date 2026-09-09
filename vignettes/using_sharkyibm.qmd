@@ -1,0 +1,413 @@
+---
+title: "Using sharkyIBM: A Guide to Simulating and Sampling Dolphin Populations"
+subtitle: "How to set up, calibrate, and run population simulations"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    fig-width: 9
+    fig-height: 5
+    code-fold: false
+editor: 
+  markdown: 
+    wrap: 72
+---
+
+## Overview
+
+**sharkyIBM** is an individual-based population simulation (IBM) package
+designed to model dolphin populations with realistic life-history
+dynamics and sampling schemes. The package implements a three-step
+workflow:
+
+1.  **Calibrate** a stable population using `create.stable.pop()`
+2.  **Simulate** the population forward in time using `simulate.pop()`
+3.  **Sample** from the population using `sample.pop()`
+
+This guide walks you through each step using biologically realistic
+parameters for **eastern spinner dolphins** (*Stenella attenuata*).
+
+## Loading the Package
+
+```{r}
+#| label: setup
+library(sharkyIBM)
+library(tidyverse)
+library(ggplot2)
+
+# Set a seed for reproducibility
+set.seed(7729)
+```
+
+## Part 1: Understanding the Population Model
+
+### What is an Individual-Based Model (IBM)?
+
+An IBM is a computational simulation where each animal is tracked
+individually with its own characteristics (age, sex, reproductive state,
+parentage). This allows us to capture individual variation and realistic
+breeding patterns that would be difficult to model with population-level
+equations.
+
+In sharkyIBM: - Each dolphin has a unique ID, age, sex, maturity status,
+and reproductive history - Dolphins age each year and die based on
+age-specific survival probabilities - Females cycle through reproductive
+states (pregnant, nursing calf, resting) - Offspring inherit their
+mother's identity, creating a complete pedigree - The population can be
+sampled in ways that mimic real fishing operations
+
+### The Markov Breeding Cycle (Simplified Explanation)
+
+The dolphin's reproductive life cycles through three
+repeating states:
+
+1.  **PREGNANT (S1):** Carrying a fetus for \~11 months. Once pregnant,
+    she will give birth.
+2.  **WITH DEPENDENT CALF (S2):** Just gave birth and nursing a calf for
+    19-24 months. She is **suppressed** from breeding again —
+    lactational suppression.
+3.  **RESTING (S3):** Her calf has been weaned or died. She's ready to
+    breed again.
+
+The **key biological realism**: a mother whose calf dies is "released"
+from lactational suppression and can breed sooner. A model that doesn't
+capture this would miss an important ecological response to high calf
+mortality.
+
+Each year, the female's state is updated randomly based on her current
+state and age-specific probabilities. The result: a distribution of
+calving intervals emerges naturally from the model without being forced
+in.
+
+### Density Dependence (Simplified Explanation)
+
+Imagine a population of dolphins. When populations are small (and
+resources plentiful), dolphins can breed frequently. When populations
+grow large (and food or space becomes scarce), breeding slows — fewer
+conceptions occur, calving intervals get longer.
+
+We model this using a mechanism called **Pella-Tomlinson compensation**.
+As the population declines from its carrying capacity (K), conception
+rates increase — the population "compensates" by "breeding harder" to
+recover. This is done by adjusting the conception probabilities based on
+population size (depletion).
+
+**In plain terms:** When dolphins are relatively scarce, each female breeds more
+often to help the population recover. When they're relatively abundant, breeding
+slows. This is a realistic feedback loop that keeps the population
+self-correcting.
+
+## Part 2: Life-History Parameters for Eastern Spinner Dolphins
+
+Based on the eastern spinner dolphin life-history model, here are the
+recommended parameters:
+
+### Mortality (Siler U-Shaped Curve)
+
+Eastern spinners follow a classic mammalian mortality curve: - **High
+calf mortality** (\~0.15/year excess) — calves are vulnerable - **Low
+adult mortality** (\~0.04/year baseline) — prime-age dolphins live
+well - **Senescent mortality** (\~0.10/year added) — old dolphins have
+higher mortality
+
+```{r}
+#| label: mortality-params
+
+# Age sequence
+ages <- 0:40
+
+# Siler parameters (U-shaped mortality)
+M_adult <- 0.04       # Baseline adult mortality rate
+M_calf_excess <- 0.15 # Additional mortality for calves
+b_juv <- 0.5          # Juvenile decay rate (how fast juvenile mortality declines)
+a_sen_onset <- 28     # Age when senescence begins
+M_sen_add <- 0.10     # Mortality ADDED by senescence, attained at a_sen_ref (not at max_age)
+sen_curve <- 0.15     # Curvature of the senescent rise; smaller = gentler upswing
+a_sen_ref <- 40        # Reference age at which M_sen_add is fully realized (> a_sen_onset)
+
+# Construct the full mortality curve. The senescent term is normalized so it
+# is 0 at a_sen_onset and exactly M_sen_add at a_sen_ref, then keeps rising
+# beyond it. sen_curve controls how quickly it climbs between those two anchors.
+M_at_age <- M_calf_excess * exp(-b_juv * ages) + M_adult
+sen_denom <- exp(sen_curve * (a_sen_ref - a_sen_onset)) - 1
+M_at_age[ages >= a_sen_onset] <- M_at_age[ages >= a_sen_onset] +
+  M_sen_add * (exp(sen_curve * (ages[ages >= a_sen_onset] - a_sen_onset)) - 1) /
+              sen_denom
+
+# Convert mortality to survival
+survival <- exp(-M_at_age)
+
+# Plot the survival curve
+data.frame(age = ages, survival = survival) |>
+  ggplot(aes(age, survival)) +
+  geom_line(linewidth = 1) +
+  labs(x = "Age (years)", y = "Annual Survival Probability",
+       title = "Eastern Spinner Dolphin Survival Curve (Siler)",
+       subtitle = "High juvenile mortality, flat in prime ages, senescence after age 28") +
+  theme_minimal() +
+  scale_y_continuous(limits = c(0, 1))
+```
+
+### Maturity (Logistic Ogive)
+
+Eastern spinner females reach sexual maturity around age 9, with the
+probability following a logistic (S-shaped) curve:
+
+```{r}
+#| label: maturity-params
+
+# Logistic maturity ogive
+a50 <- 9       # Age at 50% maturity
+slope <- 1.5   # Steepness of the curve
+
+ogive_f <- plogis(ages, location = a50, scale = 1/slope)
+
+# Plot the maturity curve
+data.frame(age = ages, maturity_prob = ogive_f) |>
+  ggplot(aes(age, maturity_prob)) +
+  geom_line(linewidth = 1) +
+  geom_vline(xintercept = a50, linetype = "dashed", color = "gray50") +
+  labs(x = "Age (years)", y = "Probability of Being Mature",
+       title = "Female Maturity Ogive (Logistic)",
+       subtitle = "50% mature by age 9") +
+  theme_minimal() +
+  scale_y_continuous(limits = c(0, 1))
+```
+
+### Breeding Parameters
+
+```{r}
+#| label: breeding-params
+
+# Lactational suppression (log-odds from observed pregnant:lactating ratio)
+rho <- -3.255
+
+# Calving interval and suppression ratio
+target_interval <- 2.84      # Years between successive calves (observed)
+target_depletion <- 0.3      # Depletion at which this interval was observed
+suppression_ratio <- 0.15    # psi_nurse / psi_rest
+
+# Pella-Tomlinson shape for density dependence
+z_pt <- 2.39  # IWC convention; sets MNPL at 0.6 K
+
+cat("Breeding parameters:\n")
+cat(sprintf("  Lactational suppression (rho): %.3f\n", rho))
+cat(sprintf("  Target calving interval: %.2f years\n", target_interval))
+cat(sprintf("  Target depletion: %.1f%%\n", target_depletion * 100))
+cat(sprintf("  Pella-Tomlinson shape (z): %.2f\n", z_pt))
+```
+
+### Demographic Parameters
+
+```{r}
+#| label: demo-params
+
+max_age <- 40              # Maximum lifespan
+litter_size <- 1           # Always one calf per pregnancy
+female_fraction <- 0.5     # Sex ratio at birth
+weaning_age <- 2L          # Years a calf is dependent (age 0-1)
+num_mates <- 1L            # Polyandry level (1 = one sire per female)
+infertility <- c(0.05, 0.05)  # Female, male infertility rates
+```
+
+## Part 3: Step-by-Step Workflow
+
+### Step 1: Calibrate the Population
+
+The first step calibrates a stable population using the
+`create.stable.pop()` function. This function:
+
+1.  **Phase 1 (Leslie):** Uses a Leslie matrix to estimate the age-0
+    survival (s0) or density-dependence parameter (theta) analytically
+2.  **Phase 2 (IBM):** Runs a simulation to refine the estimate until
+    the population growth rate is essentially zero
+3.  **Returns:** A configuration object bundling all parameters together
+
+```{r}
+#| label: calibrate-population
+#| message: true
+
+cat("Calibrating population...\n\n")
+
+config <- create.stable.pop(
+  # Life history
+  max_age         = max_age,
+  survival        = survival,
+  maturity_age    = ogive_f,
+  litter_size     = litter_size,
+  
+  # Breeding cycle
+  rho             = rho,
+  weaning_age     = weaning_age,
+  
+  # Demographics
+  female_fraction = female_fraction,
+  num_mates       = num_mates,
+  infertility     = infertility,
+  
+  # Social structure
+  pod_size        = 20,
+  superpod_size   = 10,
+  stickiness_year = 0.9,
+  male_behavior   = "random",
+  
+  # Population size for calibration
+  pop_size        = 20000,
+  
+  # Density dependence
+  density_dependence = TRUE,
+  z_pt            = z_pt,
+  target_interval = target_interval,
+  target_depletion = target_depletion,
+  
+  # Convergence
+  check_interval  = 10L,
+  growth_tol      = 0.001,
+  stable_required = 5L,
+  max_windows     = 100L
+)
+
+cat("\nCalibration complete!\n")
+cat("Key outputs:\n")
+cat(sprintf("  Calving interval at K: %.2f years\n", config$interval_K))
+cat(sprintf("  dd_max (compensation strength): %.4f\n", config$dd_max))
+cat(sprintf("  K_1plus (1+ animals at K): %s\n", format(config$K_1plus, big.mark = ",")))
+```
+
+### Step 2: Solve for Sustainable Fishing Mortality
+
+If you want to fish the population at a stable level, use
+`solve_F_sustainable()`:
+
+```{r}
+#| label: solve-F
+#| message: true
+
+cat("Solving for sustainable fishing mortality at D=0.3...\n\n")
+
+f_result <- solve_F_sustainable(config)
+
+cat("\nFishing solution:\n")
+cat(sprintf("  F (Leslie analytical): %.4f\n", f_result$F_leslie))
+cat(sprintf("  F (IBM-calibrated): %.4f (%.1f%% lower)\n", 
+            f_result$F_sustainable,
+            100 * (1 - f_result$F_sustainable / f_result$F_leslie)))
+cat(sprintf("  Calving interval at equilibrium: %.2f years\n", 
+            f_result$interval_at_equilibrium))
+```
+
+### Step 3: Run the Simulation
+
+Simulate the population forward in time:
+
+```{r}
+#| label: run-simulation
+#| message: true
+
+cat("Simulating population for 100 years...\n\n")
+
+sim <- simulate.pop(
+  sim_config = config,
+  num_years = 100,
+  sample_years = c(50, 100),
+  
+  # Fishing parameters (optional)
+  F_t = f_result$F_sustainable,
+  selectivity = f_result$selectivity,
+  init_depletion = 0.3
+)
+
+cat("\nSimulation complete!\n")
+
+# Extract population summary
+pop_summary <- sim$pop_summary
+
+# Post-burn-in only
+burn_in <- 2 * config$max_age
+post_burn <- pop_summary[pop_summary$year > burn_in, ]
+
+cat(sprintf("\nPost-burn-in population (years %d-%d):\n", 
+            burn_in + 1, max(post_burn$year)))
+cat(sprintf("  Initial N: %s\n", format(post_burn$N[1], big.mark = ",", trim = TRUE)))
+cat(sprintf("  Final N: %s\n", format(tail(post_burn$N, 1), big.mark = ",", trim = TRUE)))
+cat(sprintf("  Mean N: %s\n", format(round(mean(post_burn$N)), big.mark = ",", trim = TRUE)))
+
+# Analyze stability
+log_N <- log(post_burn$N)
+growth_rates <- diff(log_N)
+cat(sprintf("  Mean growth rate: %+.5f /year\n", mean(growth_rates)))
+cat(sprintf("  SD growth rate: %.5f\n", sd(growth_rates)))
+```
+
+### Step 4: Visualize the Trajectory
+
+```{r}
+#| label: plot-trajectory
+#| fig-cap: "Population trajectory during and after burn-in."
+
+# Full population summary
+pop_summary_all <- sim$pop_summary
+
+# Compute target N at depletion
+target_N <- config$pop_size * target_depletion
+
+ggplot(pop_summary_all, aes(x = year, y = N)) +
+  geom_line(linewidth = 0.8) +
+  geom_vline(xintercept = burn_in, linetype = "dotted", color = "gray50", linewidth = 0.5) +
+  geom_hline(yintercept = target_N, linetype = "dashed", color = "red", alpha = 0.6) +
+  labs(x = "Year", y = "Population Size (age 1+)",
+       title = "Population Trajectory with Sustainable Fishing") +
+  theme_minimal() +
+  theme(panel.grid.minor = element_blank())
+```
+
+### Step 5: Sample from the Population
+
+Finally, sample individuals to simulate a fishing operation or genetic
+sampling study:
+
+```{r}
+#| label: sample-population
+#| message: true
+
+cat("Sampling from population at year 100...\n\n")
+
+samples <- sample.pop(
+  sim_output = sim,
+  n_trips = 5,
+  n_sets = 4,
+  sample_size = 30,
+  sample_per = "set",
+  sampling = "superpod",
+  stickiness_set = 0.8,
+  stickiness_trip = 0.6
+)
+
+cat(sprintf("\nSampling complete!\n"))
+cat(sprintf("  Total sampled individuals: %d\n", nrow(samples)))
+cat(sprintf("  Unique sampled individuals: %d\n", length(unique(samples$id))))
+cat(sprintf("  Duplicates due to stickiness: %d\n", 
+            nrow(samples) - length(unique(samples$id))))
+```
+
+## Key Parameters Summary
+
+| Parameter | Value | Meaning |
+|----|----|----|
+| `max_age` | 40 | Maximum lifespan (years) |
+| `survival` | Siler curve | Age-specific survival probabilities |
+| `ogive_f` | Logistic (a50=9) | Female maturity curve |
+| `litter_size` | 1 | Calves per pregnancy |
+| `rho` | -3.255 | Log-odds of nursing vs resting conception |
+| `target_interval` | 2.84 | Calving interval at target depletion |
+| `target_depletion` | 0.3 | Reference depletion level |
+| `z_pt` | 2.39 | Pella-Tomlinson shape |
+| `weaning_age` | 2 | Years of calf dependency |
+| `pod_size` | 20 | Family group size |
+| `superpod_size` | 10 | Community size |
+
+------------------------------------------------------------------------
+
+**For more information:** See `?create.stable.pop()`, `?simulate.pop()`,
+`?sample.pop()`
