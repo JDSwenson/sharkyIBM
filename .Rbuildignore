@@ -1,6 +1,24 @@
 ^sharkyIBM\.Rproj$
 ^\.Rproj\.user$
-^LICENSE\.md$
-^README\.Rmd$
+^\.posit/
 ^\.positai$
 ^\.claude$
+^\.git.*$
+^\.vscode$
+^docs/
+^PACKAGE_STRUCTURE\.md$
+
+# Development files (not part of package)
+^README\.Rmd$
+^LICENSE\.md$
+
+# Temporary and build artifacts
+^\.tmp$
+^\.cache$
+^.*\.Rcheck$
+^.*\.tar\.gz$
+
+# Development notes and local files
+^\.env.*$
+^\.secrets.*$
+^\.posit/assistant$

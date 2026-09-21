@@ -2,112 +2,288 @@
 % Please edit documentation in R/simulate_population.R
 \name{simulate.pop}
 \alias{simulate.pop}
-\title{Simulate age-structured shark populations and sampling}
+\title{Simulate an age-structured population and store snapshots for sampling}
 \usage{
 \method{simulate}{pop}(
-  input_data,
-  mating_periodicity,
-  maturity_age,
-  num_mates,
+  sim_config,
   num_years,
-  female_fraction = 0.5,
-  age_length_df = NULL,
-  movement_array = NULL,
-  infertility = 0,
-  popstructure = "panmictic"
+  sample_years = NULL,
+  F_t = NULL,
+  selectivity = NULL,
+  init_depletion = NULL
 )
 }
 \arguments{
-\item{mating_periodicity}{Integer (>= 1). Female reproductive cycle periodicity (e.g., 1 = annual, 2 = biennial).}
+\item{sim_config}{List returned by \code{create.stable.pop()}.  Contains all
+life-history and social structure parameters plus calibration results.}
 
-\item{num_mates}{Integer vector or scalar. Number of mates per mother (sampled with replacement).}
+\item{num_years}{Integer. Simulation years to run after the burn-in.}
 
-\item{num_years}{Integer (>= 1). Number of analysis years after burn-in.}
+\item{sample_years}{Integer (scalar, vector, or NULL).
+\itemize{
+\item Scalar: store snapshots for the last \code{sample_years} years of
+the simulation.
+\item Vector: store snapshots at exactly these year indices (1-indexed,
+counting from the start of burn-in).
+\item NULL: no snapshots (but then why are you running this?).
+}}
 
-\item{age_length_df}{Data frame/tibble. Must contain at least \code{age.x}, \code{mean_length}, and \code{age_length_sd}.}
+\item{F_t}{Fishing mortality schedule for post-burn-in years (or all years
+when \code{init_depletion} is set).  Instantaneous rate, combined with
+natural mortality as a competing hazard:
+\code{S_total(a) = survival[a] * exp(-F * selectivity[a])}.
+\itemize{
+\item NULL (default): no fishing.  Existing behavior unchanged.
+\item Scalar: constant F applied every year.
+\item Numeric vector of length \code{num_years}: year-specific F.
+}
+When \code{init_depletion} is set, fishing also applies during the burn-in
+to maintain the depleted state.}
 
-\item{movement_array}{Three-dimensional array of age-based movement probabilities to locations where individual animals will be sampled. Dimensions should be [age, sampling_location, population]. In other words, each population should have its own matrix, ordered the same as the populations. The array should include age 0 individuals, so the number of rows should be max_age+1, and the movement probability for age a should be in the row a+1. For example, the probability to find age 6 individuals from population 1 at sampling location 4 would be specified in the movement_array [7, 4, 1].}
+\item{selectivity}{Numeric vector of length \code{max_age + 1}, values in
+\code{[0, 1]}.  Age-specific vulnerability to the fishery.  Required when
+\code{F_t} is non-NULL.  A typical choice is \code{c(0, rep(1, max_age))}
+(flat on ages 1+, age-0 excluded).}
 
-\item{infertility}{Numeric in [0, 1] specifying the proportion of the population that is infertile throughout their lives. This characteristic is assigned at birth and stays with an individual throughout its life.}
-
-\item{init_pop_size}{Integer vector. Initial population size per population (order should match columns of \code{Nages}).}
-
-\item{init_prop_female}{Numeric scalar in [0, 1]. Initial proportion female in the population.}
-
-\item{Nages}{Integer matrix. Rows are ages, columns are populations; entries give counts used to build initial ages.}
-
-\item{repro_age}{Integer (>= 0). Minimum female age for reproduction (knife-edged maturity).}
-
-\item{YOY_survival}{Numeric in [0, 1]. Survival parameter for young-of-year (if not overridden by a survival table).}
-
-\item{juvenile_survival}{Numeric in [0, 1]. Survival parameter for juveniles (if not overridden).}
-
-\item{adult_survival}{Numeric in [0, 1]. Survival parameter for adults (if not overridden).}
-
-\item{max_age}{Integer (>= 0). Individuals at or above this age are removed (die of senescence).}
-
-\item{ff}{List or numeric. Fecundity-related parameters passed to offspring-generation helpers.}
-
-\item{burn_in}{Integer (>= 0). Number of initial years simulated before analysis years.}
+\item{init_depletion}{Numeric in (0, 1], or NULL.  Controls the initial
+population state:
+\itemize{
+\item NULL or 1 (default): initialise at \code{pop_size} with the
+unfished stable age distribution.  Fishing applies only during
+post-burn-in years.
+\item Value in (0, 1): initialise at
+\code{init_depletion * pop_size} individuals using the \strong{fished}
+stable age distribution (younger-skewed, matching decades of sustained
+fishing).  Fishing applies from year 1 (including burn-in) to maintain
+the depleted state.  This avoids simulating the full carrying capacity
+and eliminates the fishing-down transient.
+}
+Requires \code{density_dependence = TRUE} and \code{F_t} to be non-NULL.}
 }
 \value{
-A list with two elements:
-\itemize{
-\item \code{pop.size}: data frame/tibble of population metrics by year and population.
-\item \code{samples.df}: data frame/tibble of sampled individuals (may be empty if no sampling occurs).
+A named list (returned invisibly):
+\describe{
+\item{pop_summary}{data.table: sex-specific numbers-at-age for all simulation years, including burn-in.}
+\item{snapshots}{Named list of data.tables containing metadata for every simulated individual in each year specified by \code{sample_years}.}
+\item{pod_to_sp}{Integer vector mapping pod -> superpod. This is used in \code{sample.pop} to shuffle animals around between sets and trips.}
+\item{sim_config}{Passed through for \code{sample.pop()}.}
 }
-The list is returned invisibly.
 }
 \description{
-Runs a forward-time, age-structured simulation across one or more populations,
-including reproduction, growth, and survival, with optional sampling of
-individuals in specified years. Returns yearly population metrics and sampled
-individuals suitable for downstream analysis.
+Runs a forward-time, individual-based simulation with full parentage tracking
+and a Markov breeding cycle coupled to calf survival.  The simulation runs a
+burn-in of \code{2 * max_age} years (to flush founders and let the age
+structure equilibrate), after which \code{num_years} additional years are run.
+A snapshot of the full living population for each year specified by
+\code{sample_years} will be stored and returned for use by
+\code{sample.pop()}.  This function is meant to be run after
+\code{create.stable.pop()} and prior to \code{sample.pop()}.
 }
 \details{
-This function orchestrates initialization, breeding, growth, survival, and optional
-sampling of individuals. It relies on several helper functions (e.g., for offspring
-generation, reproduction probabilities, dispersal, and sampling) that are defined
-elsewhere in the package.
+When density dependence is active (\code{sim_config$density_dependence =
+TRUE}), conception probabilities are adjusted each year based on depletion
+relative to carrying capacity, using a Pella--Tomlinson compensation
+mechanism on the logit scale.
+\subsection{Life History Parameters (from \code{sim_config})}{
 
-The return value is a list with population metrics per year and any sampled
-individuals.
-}
-\examples{
-\dontrun{
-# Minimal scaffold showing inputs (uses tiny sizes and fake tables)
-init_pop_size <- c(MX = 10, ES = 8, EC = 12)
-Nages <- matrix(c(3,4,3,
-                  4,2,4,
-                  3,2,5), nrow = 3, byrow = TRUE)
-colnames(Nages) <- names(init_pop_size)
+\strong{max_age:} Maximum lifespan. Individuals are removed from the population
+before they can breed at age \code{max_age + 1} (they breed at age
+\code{max_age}, then are removed).
 
-age_length_df <- tibble::tibble(
-  age = 0:10,
-  mean_length = seq(80, 130, length.out = 11),
-  age_length_sd = rep(8, 11)
-)
+\strong{survival:} Numeric vector of annual survival probabilities (ages 0 through
+\code{max_age}).  When \code{density_dependence = FALSE}, the age-0 value is
+the calibrated s0.  When \code{density_dependence = TRUE}, all values are
+user-supplied and unchanged.  At each time step, each individual's age k
+survives to age k+1 with probability \code{survival[k + 1]}.
 
-out <- simulate.pop(
-  init_pop_size = init_pop_size,
-  init_prop_female = 0.5,
-  Nages = Nages,
-  mating_periodicity = 1,
-  repro_age = 5,
-  YOY_survival = 0.7,
-  juvenile_survival = 0.85,
-  adult_survival = 0.92,
-  max_age = 20,
-  num_mates = 1:2,
-  ff = list(),
-  burn_in = 0,
-  num_years = 1,
-  age_length_df = age_length_df
-)
+\strong{pop_size:} Initial population size.  This is the carrying capacity K when
+density dependence is active.
+
+\strong{litter_size:} Mean number of offspring per breeding female (lambda for a
+Poisson draw).  The package is generic to any litter size >=1, though
+dolphins use litter_size = 1.  Each breeding female draws the number of
+offspring as \code{rpois(lambda = litter_size - 1) + 1}, ensuring at least
+one calf per breeding event.  Only the first offspring is tracked as the
+dependent calf (driving breeding state transitions); additional offspring are
+tracked as independent individuals.
 }
 
+\subsection{Maturity and Breeding Parameters}{
+
+\strong{maturity_age:} Specifies when individuals become reproductive.  Can be:
+\itemize{
+\item An integer: knife-edged maturity (both sexes mature at that age).
+\item A numeric vector of length \code{max_age + 1}: cumulative maturity
+ogive (CDF).  Each individual draws a personal \code{mat_age} from the
+ogive PMF at birth; they become reproductive when their calendar age
+reaches their personal \code{mat_age}.
+\item A list with \code{female} and \code{male} elements: allows sex-specific
+maturity schedules (e.g., logistic ogive for females, knife-edged for
+males).
 }
-\seealso{
-Helper functions you will define and document separately, e.g.,
-offspring generation and sampling utilities.
+
+\strong{psi_nurse, psi_rest:} Conception probabilities in the Markov breeding
+cycle.  Mothers in state S2 (with dependent calf) have conception probability
+\code{psi_nurse} if the calf is alive, or \code{psi_rest} if the calf has
+died.  These values are either supplied directly to
+\code{create.stable.pop()} (legacy) or solved from
+\code{calving_interval} + \code{suppression_ratio} (DD=FALSE mode)
+or \code{rho} (DD=TRUE mode).
+When \code{density_dependence = TRUE}, these values are adjusted during
+calibration to \code{psi_nurse_K}, \code{psi_rest_K} (reference values at
+carrying capacity K).  During the simulation, when density dependence is
+active, conception rates are shifted on the logit scale based on depletion
+(see below).  \code{psi_rest} should be >= \code{psi_nurse}; \code{psi_nurse}
+= 0 means lactational suppression is complete (no conceptions while nursing).
+
+\strong{num_mates:} Number of males each breeding female mates with per breeding
+cycle.  Typically 1 (monandry) or small integers.  Males are drawn from the
+superpod's mature male pool; if the superpod has fewer than \code{num_mates}
+mature males, remaining mates are drawn from other superpods.
+
+\strong{female_fraction:} Fraction of offspring that are female (0.5 for equality).
+
+\strong{infertility:} Proportion of permanently infertile individuals (same-sex or
+sex-specific \code{c(female, male)}).  At birth, each individual draws a
+Bernoulli trial; if infertile, they never enter the breeding cycle and are
+excluded from mating pools.  This affects equilibrium s0 (higher infertility
+requires higher s0 to stabilize).
+}
+
+\subsection{Markov Breeding Cycle with Calf-Survival Coupling}{
+
+Each mature female carries a breeding state: S1 (pregnant), S2 (with dependent
+calf), or S3 (resting).  States transition each year:
+\enumerate{
+\item \strong{S1 mothers give birth:} Transition to S2 with their first
+offspring tracked as dependent calf (\code{calf_id}). If she gives birth
+to multiple calves (litter_size > 1), only the first is tracked.
+\item \strong{S2 mothers age the calf:} Each year, the dependent calf ages
+by 1. The mother stays in S2 up to \code{weaning_age} years; once the calf
+reaches \code{weaning_age}, or if the calf dies, the mother transitions
+(see below).
+\item \strong{S2 mothers transition to S1 or S3:} At the end of year k in
+S2, if the calf is alive but below \code{weaning_age}, the mother conceives
+with probability \code{psi_nurse} (if alive) or \code{psi_rest} (if calf
+is dead).  If conception occurs, she transitions to S1 (pregnant) for the
+next year.  If no conception, she transitions to S3 (resting) for up to 1
+year, then returns to S1 with near certainty.
+\item \strong{S3 mothers return to S1:} S3 mothers attempt conception with
+probability 1.0 each year (effectively guaranteed to breed, resuming S1).
+\item \strong{Newly mature females start in S3:} Newly matured females enter
+the cycle at S3 (resting), never breeding in their first year of maturity.
+This matches the biological constraint that dolphins cannot conceive until
+the season after reaching reproductive maturity.
+}
+
+The S2 state lasts up to \code{weaning_age} years (default 1 if NULL,
+equivalent to 3-state cycle; can be 2+ for extended nursing).  The dependent
+calf also follows the mother's pod and superpod until independence (age
+\code{weaning_age}), creating social cohesion.
+
+Calf survival data is encoded in the \code{s2_year} column (internal): an
+S2 mother's calf survival depends on the mother's age k at her last
+conception.  This couples the demographic rates to individual history,
+creating realistic compensatory feedback.
+}
+
+\subsection{Social Structure}{
+
+\strong{pod_size, superpod_size:} Fixed hierarchical structure.  Pods (family
+groups) are nested within superpods (mating communities).  Pod-to-superpod
+mapping is fixed at initialization and carried forward via \code{pod_to_sp}.
+Offspring inherit their mother's pod and superpod.
+
+\strong{stickiness_year:} Between-year superpod fidelity (can be sex-specific
+\code{c(female, male)} or scalar).  This parameter applies only to individuals
+age \code{weaning_age} and above.  Each year, eligible individuals remain in
+their current superpod with probability \code{stickiness_year}; those that
+move (probability \code{1 - stickiness_year}) emigrate to a different superpod
+chosen uniformly at random (not within-pod reshuffling; this is true
+emigration).  A value of 1.0 means complete site fidelity; 0.0 means complete
+mixing.
+
+\strong{weaning_age:} Age of independence from mother.  Dependent calves below this
+age are excluded from between-year superpod reshuffling (they follow the
+mother).  Also determines the maximum years a mother stays in S2.  If NULL,
+defaults to 1 year, effectively a 3-state breeding cycle; if 2+, extends to
+multi-year dependency (e.g., 4-state cycle for weaning_age = 2).
+}
+
+\subsection{Mating Systems}{
+
+\strong{male_behavior:} Mating mode for assigning paternity.  \code{"random"}: any
+mature, fertile male in the superpod may sire offspring (polyandry controlled
+by \code{num_mates}).  \code{"strong_bull"}: one persistent bull per superpod
+sires all offspring; the bull is elected randomly from mature males (not
+age-based), giving realistic multi-year tenure.  Bullships persist until the
+bull dies or transitions to a different superpod.
+
+\strong{max_females:} Per-year cap on mates per male.  If a male would exceed this
+number, excess offspring are reassigned to other males in the same superpod
+(or cross-superpod fallback if needed).  Enforces realistic operational
+constraints on male mating effort.
+}
+
+\subsection{Density Dependence (Pella-Tomlinson compensation)}{
+
+When \code{density_dependence = TRUE}, conception probabilities are adjusted
+each year based on depletion. The conception rate at time t is:
+\preformatted{
+  psi(t) = psi_K + delta_max * [1 - D(t)^z]
+}
+where:
+\itemize{
+\item psi_K is the reference conception rate at carrying capacity K
+\item delta_max is the maximum logit-scale shift (user-supplied)
+\item D(t) = N_1+(t) / K_1+ is the depletion (age 1+ component)
+\item z is z_pt, the Pella--Tomlinson shape (typically 2.39, IWC convention)
+}
+
+The shift is applied on the logit (log-odds) scale, preserving the odds ratio
+between \code{psi_nurse} and \code{psi_rest}.  At K, D(t) ≈ 1 so
+delta_max * \code{[1 - D(t)^z]} ≈ 0, and reference rates apply.  Below K,
+D(t) < 1 so the shift is positive, increasing conception rates (compensatory
+response). Above K, the shift is negative, decreasing conception rates.  With
+z = 2.39 (IWC convention), MNPL (Maximum Net Population Level) occurs at
+D ≈ 0.6, i.e., 60\% of K.
+
+When \code{density_dependence = FALSE}, conception rates are constant
+(s0 calibration mode).
+
+The \code{dd_max} value may have been supplied directly to
+\code{create.stable.pop()} or solved automatically from a
+\code{target_interval} (observed calving interval at a reference depletion).
+Either way, the value stored in \code{sim_config$dd_max} is used here.
+\strong{The recommended path is to anchor via \code{target_interval} in
+\code{create.stable.pop()}} -- direct \code{dd_max} values have no
+biologically meaningful default and should generally be reserved for
+sensitivity analyses or theoretical runs.
+}
+
+\subsection{Automatic Burn-in and Snapshots}{
+
+The function automatically runs \code{2 * max_age} years of burn-in before the
+post-burn-in simulation begins.  Burn-in serves two purposes: (1) flush all
+founders (mother_id = 0, father_id = 0), which takes max_age years, and (2)
+let the age structure settle from Leslie-matrix equilibrium to the true
+stochastic equilibrium, which requires ~max_age additional years.
+
+Snapshots are requested by \code{sample_years}; the population summary covers
+all years (burn-in + post-burn-in).  Snapshots store full individual-level
+data: id, birth_year, age, sex, mat_age, mother_id, father_id, breed_state,
+fertile, population, calf_id, pod, superpod.  Internal column \code{s2_year}
+(used to track calf survival age) is excluded from snapshots.
+}
+}
+\references{
+Pella, J. J., & Tomlinson, P. K. (1973). A generalized stock production
+model. Inter-American Tropical Tuna Commission Bulletin, 13, 422-458.
+
+Caswell, H. (2001). Matrix Population Models: Construction, Analysis, and
+Interpretation (2nd ed.). Sinauer Associates.
+
+Hoyle, S. D., & Maunder, M. N. (2004). A Bayesian approach to incorporating
+indices of abundance and uncertainty of process in stock assessment models.
+Canadian Journal of Fisheries and Aquatic Sciences, 61, 1388-1399.
 }

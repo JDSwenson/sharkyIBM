@@ -1,5 +1,49 @@
-.Rproj.user
-.positai
+# RStudio / R session artifacts
+.Rproj.user/
 .Rhistory
-.Rbuildignore
-sharkyIBM.Rproj
+.RData
+.Ruserdata
+.Rapp.history
+
+# R build and check artifacts
+*.Rcheck/
+*.tar.gz
+*.Rout
+src/*.o
+src/*.so
+src/*.dll
+
+# IDE and editor files
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# AI assistant local files (not part of package)
+.posit/
+.positai
+.claude
+.copilot-instructions.md
+CLAUDE.md
+
+# Conversation exports and development logs (not part of package)
+conversation-export.html
+conversation-export.md
+.conversation-history
+
+# Temporary or development files
+.Rmd.utf8.md
+.tmp/
+.cache/
+
+# Dependencies cache
+renv/
+renv.lock
+
+# System-specific files
+.env
+.env.local
+.secrets
+.credentials

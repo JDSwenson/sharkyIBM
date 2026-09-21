@@ -1,0 +1,50 @@
+bibentry("Manual",
+  title = "sharkyIBM: Individual-Based Population Simulation for Close-Kin Mark-Recapture Analysis",
+  author = "Swenson, James",
+  year = 2026,
+  note = "R package version 0.0.0.9000",
+  url = "https://github.com/jswenson/sharkyIBM",
+  textVersion = "Swenson, J. (2026). sharkyIBM: Individual-Based Population Simulation for Close-Kin Mark-Recapture Analysis. R package version 0.0.0.9000."
+)
+
+# Key methodological references
+
+bibentry("Article",
+  title = "A generalized stock production model",
+  author = c(person("J. J.", "Pella"), person("P. K.", "Tomlinson")),
+  journal = "Inter-American Tropical Tuna Commission Bulletin",
+  year = 1973,
+  volume = 13,
+  pages = "422--458",
+  textVersion = "Pella, J. J., & Tomlinson, P. K. (1973). A generalized stock production model. Inter-American Tropical Tuna Commission Bulletin, 13, 422-458."
+)
+
+bibentry("Book",
+  title = "Matrix Population Models: Construction, Analysis, and Interpretation",
+  author = person("Hal", "Caswell"),
+  publisher = "Sinauer Associates",
+  year = 2001,
+  edition = "2nd",
+  textVersion = "Caswell, H. (2001). Matrix Population Models: Construction, Analysis, and Interpretation (2nd ed.). Sinauer Associates."
+)
+
+bibentry("Article",
+  title = "Bayesian approach to incorporating indices of abundance and uncertainty of process in stock assessment models",
+  author = c(person("Stephen D.", "Hoyle"), person("Mark N.", "Maunder")),
+  journal = "Canadian Journal of Fisheries and Aquatic Sciences",
+  year = 2004,
+  volume = 61,
+  pages = "1388--1399",
+  textVersion = "Hoyle, S. D., & Maunder, M. N. (2004). A Bayesian approach to incorporating indices of abundance and uncertainty of process in stock assessment models. Canadian Journal of Fisheries and Aquatic Sciences, 61, 1388-1399."
+)
+
+bibentry("Article",
+  title = "Modeling age-specific mortality for marine mammal populations",
+  author = c(person("Jay", "Barlow"), person("Paul", "Boveng")),
+  journal = "Marine Mammal Science",
+  year = 1991,
+  volume = 7,
+  number = 1,
+  pages = "50--65",
+  textVersion = "Barlow, J., & Boveng, P. (1991). Modeling age-specific mortality for marine mammal populations. Marine Mammal Science, 7(1), 50-65."
+)

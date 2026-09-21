@@ -1,435 +1,1145 @@
-#' Simulate age-structured shark populations and sampling
+#' Simulate an age-structured population and store snapshots for sampling
 #'
-#' Runs a forward-time, age-structured simulation across one or more populations,
-#' including reproduction, growth, and survival, with optional sampling of
-#' individuals in specified years. Returns yearly population metrics and sampled
-#' individuals suitable for downstream analysis.
+#' Runs a forward-time, individual-based simulation with full parentage tracking
+#' and a Markov breeding cycle coupled to calf survival.  The simulation runs a
+#' burn-in of \code{2 * max_age} years (to flush founders and let the age
+#' structure equilibrate), after which \code{num_years} additional years are run.
+#' A snapshot of the full living population for each year specified by
+#' \code{sample_years} will be stored and returned for use by
+#' \code{sample.pop()}.  This function is meant to be run after
+#' \code{create.stable.pop()} and prior to \code{sample.pop()}.
 #'
-#' @param init_pop_size Integer vector. Initial population size per population (order should match columns of `Nages`).
-#' @param init_prop_female Numeric scalar in \[0, 1\]. Initial proportion female in the population.
-#' @param Nages Integer matrix. Rows are ages, columns are populations; entries give counts used to build initial ages.
-#' @param mating_periodicity Integer (>= 1). Female reproductive cycle periodicity (e.g., 1 = annual, 2 = biennial).
-#' @param repro_age Integer (>= 0). Minimum female age for reproduction (knife-edged maturity).
-#' @param YOY_survival Numeric in \[0, 1\]. Survival parameter for young-of-year (if not overridden by a survival table).
-#' @param juvenile_survival Numeric in \[0, 1\]. Survival parameter for juveniles (if not overridden).
-#' @param adult_survival Numeric in \[0, 1\]. Survival parameter for adults (if not overridden).
-#' @param max_age Integer (>= 0). Individuals at or above this age are removed (die of senescence).
-#' @param num_mates Integer vector or scalar. Number of mates per mother (sampled with replacement).
-#' @param ff List or numeric. Fecundity-related parameters passed to offspring-generation helpers.
-#' @param burn_in Integer (>= 0). Number of initial years simulated before analysis years.
-#' @param num_years Integer (>= 1). Number of analysis years after burn-in.
-#' @param age_length_df Data frame/tibble. Must contain at least `age.x`, `mean_length`, and `age_length_sd`.
-#' @param movement_array Three-dimensional array of age-based movement probabilities to locations where individual animals will be sampled. Dimensions should be \[age, sampling_location, population\]. In other words, each population should have its own matrix, ordered the same as the populations. The array should include age 0 individuals, so the number of rows should be max_age+1, and the movement probability for age a should be in the row a+1. For example, the probability to find age 6 individuals from population 1 at sampling location 4 would be specified in the movement_array \[7, 4, 1\].
-#' @param infertility Numeric in \[0, 1\] specifying the proportion of the population that is infertile throughout their lives. This characteristic is assigned at birth and stays with an individual throughout its life.
+#' When density dependence is active (\code{sim_config$density_dependence =
+#' TRUE}), conception probabilities are adjusted each year based on depletion
+#' relative to carrying capacity, using a Pella--Tomlinson compensation
+#' mechanism on the logit scale.
+#'
+#' @param sim_config List returned by \code{create.stable.pop()}.  Contains all
+#'   life-history and social structure parameters plus calibration results.
+#' @param num_years Integer. Simulation years to run after the burn-in.
+#' @param sample_years Integer (scalar, vector, or NULL).
+#'   \itemize{
+#'     \item Scalar: store snapshots for the last \code{sample_years} years of
+#'       the simulation.
+#'     \item Vector: store snapshots at exactly these year indices (1-indexed,
+#'       counting from the start of burn-in).
+#'     \item NULL: no snapshots (but then why are you running this?).
+#'   }
+#' @param F_t Fishing mortality schedule for post-burn-in years (or all years
+#'   when \code{init_depletion} is set).  Instantaneous rate, combined with
+#'   natural mortality as a competing hazard:
+#'   \code{S_total(a) = survival[a] * exp(-F * selectivity[a])}.
+#'   \itemize{
+#'     \item NULL (default): no fishing.  Existing behavior unchanged.
+#'     \item Scalar: constant F applied every year.
+#'     \item Numeric vector of length \code{num_years}: year-specific F.
+#'   }
+#'   When \code{init_depletion} is set, fishing also applies during the burn-in
+#'   to maintain the depleted state.
+#' @param selectivity Numeric vector of length \code{max_age + 1}, values in
+#'   \code{[0, 1]}.  Age-specific vulnerability to the fishery.  Required when
+#'   \code{F_t} is non-NULL.  A typical choice is \code{c(0, rep(1, max_age))}
+#'   (flat on ages 1+, age-0 excluded).
+#' @param init_depletion Numeric in (0, 1], or NULL.  Controls the initial
+#'   population state:
+#'   \itemize{
+#'     \item NULL or 1 (default): initialise at \code{pop_size} with the
+#'       unfished stable age distribution.  Fishing applies only during
+#'       post-burn-in years.
+#'     \item Value in (0, 1): initialise at
+#'       \code{init_depletion * pop_size} individuals using the \strong{fished}
+#'       stable age distribution (younger-skewed, matching decades of sustained
+#'       fishing).  Fishing applies from year 1 (including burn-in) to maintain
+#'       the depleted state.  This avoids simulating the full carrying capacity
+#'       and eliminates the fishing-down transient.
+#'   }
+#'   Requires \code{density_dependence = TRUE} and \code{F_t} to be non-NULL.
 #'
 #' @details
-#' This function orchestrates initialization, breeding, growth, survival, and optional
-#' sampling of individuals. It relies on several helper functions (e.g., for offspring
-#' generation, reproduction probabilities, dispersal, and sampling) that are defined
-#' elsewhere in the package.
 #'
-#' The return value is a list with population metrics per year and any sampled
-#' individuals.
+#' ## Life History Parameters (from \code{sim_config})
 #'
-#' @return A list with two elements:
+#' **max_age:** Maximum lifespan. Individuals are removed from the population
+#' before they can breed at age \code{max_age + 1} (they breed at age
+#' \code{max_age}, then are removed).
+#'
+#' **survival:** Numeric vector of annual survival probabilities (ages 0 through
+#' \code{max_age}).  When \code{density_dependence = FALSE}, the age-0 value is
+#' the calibrated s0.  When \code{density_dependence = TRUE}, all values are
+#' user-supplied and unchanged.  At each time step, each individual's age k
+#' survives to age k+1 with probability \code{survival[k + 1]}.
+#'
+#' **pop_size:** Initial population size.  This is the carrying capacity K when
+#' density dependence is active.
+#'
+#' **litter_size:** Mean number of offspring per breeding female (lambda for a
+#' Poisson draw).  The package is generic to any litter size >=1, though
+#' dolphins use litter_size = 1.  Each breeding female draws the number of
+#' offspring as \code{rpois(lambda = litter_size - 1) + 1}, ensuring at least
+#' one calf per breeding event.  Only the first offspring is tracked as the
+#' dependent calf (driving breeding state transitions); additional offspring are
+#' tracked as independent individuals.
+#'
+#' ## Maturity and Breeding Parameters
+#'
+#' **maturity_age:** Specifies when individuals become reproductive.  Can be:
 #' \itemize{
-#'   \item \code{pop.size}: data frame/tibble of population metrics by year and population.
-#'   \item \code{samples.df}: data frame/tibble of sampled individuals (may be empty if no sampling occurs).
-#' }
-#' The list is returned invisibly.
-#'
-#' @examples
-#' \dontrun{
-#' # Minimal scaffold showing inputs (uses tiny sizes and fake tables)
-#' init_pop_size <- c(MX = 10, ES = 8, EC = 12)
-#' Nages <- matrix(c(3,4,3,
-#'                   4,2,4,
-#'                   3,2,5), nrow = 3, byrow = TRUE)
-#' colnames(Nages) <- names(init_pop_size)
-#'
-#' age_length_df <- tibble::tibble(
-#'   age = 0:10,
-#'   mean_length = seq(80, 130, length.out = 11),
-#'   age_length_sd = rep(8, 11)
-#' )
-#'
-#' out <- simulate.pop(
-#'   init_pop_size = init_pop_size,
-#'   init_prop_female = 0.5,
-#'   Nages = Nages,
-#'   mating_periodicity = 1,
-#'   repro_age = 5,
-#'   YOY_survival = 0.7,
-#'   juvenile_survival = 0.85,
-#'   adult_survival = 0.92,
-#'   max_age = 20,
-#'   num_mates = 1:2,
-#'   ff = list(),
-#'   burn_in = 0,
-#'   num_years = 1,
-#'   age_length_df = age_length_df
-#' )
+#'   \item An integer: knife-edged maturity (both sexes mature at that age).
+#'   \item A numeric vector of length \code{max_age + 1}: cumulative maturity
+#'     ogive (CDF).  Each individual draws a personal \code{mat_age} from the
+#'     ogive PMF at birth; they become reproductive when their calendar age
+#'     reaches their personal \code{mat_age}.
+#'   \item A list with \code{female} and \code{male} elements: allows sex-specific
+#'     maturity schedules (e.g., logistic ogive for females, knife-edged for
+#'     males).
 #' }
 #'
-#' @seealso
-#' Helper functions you will define and document separately, e.g.,
-#' offspring generation and sampling utilities.
+#' **psi_nurse, psi_rest:** Conception probabilities in the Markov breeding
+#' cycle.  Mothers in state S2 (with dependent calf) have conception probability
+#' \code{psi_nurse} if the calf is alive, or \code{psi_rest} if the calf has
+#' died.  These values are either supplied directly to
+#' \code{create.stable.pop()} (legacy) or solved from
+#' \code{calving_interval} + \code{suppression_ratio} (DD=FALSE mode)
+#' or \code{rho} (DD=TRUE mode).
+#' When \code{density_dependence = TRUE}, these values are adjusted during
+#' calibration to \code{psi_nurse_K}, \code{psi_rest_K} (reference values at
+#' carrying capacity K).  During the simulation, when density dependence is
+#' active, conception rates are shifted on the logit scale based on depletion
+#' (see below).  \code{psi_rest} should be >= \code{psi_nurse}; \code{psi_nurse}
+#' = 0 means lactational suppression is complete (no conceptions while nursing).
 #'
-#' @export
-
-simulate.pop <- function(input_data,
-                         mating_periodicity,
-                         maturity_age,
-                         num_mates,
+#' **num_mates:** Number of males each breeding female mates with per breeding
+#' cycle.  Typically 1 (monandry) or small integers.  Males are drawn from the
+#' superpod's mature male pool; if the superpod has fewer than \code{num_mates}
+#' mature males, remaining mates are drawn from other superpods.
+#'
+#' **female_fraction:** Fraction of offspring that are female (0.5 for equality).
+#'
+#' **infertility:** Proportion of permanently infertile individuals (same-sex or
+#' sex-specific \code{c(female, male)}).  At birth, each individual draws a
+#' Bernoulli trial; if infertile, they never enter the breeding cycle and are
+#' excluded from mating pools.  This affects equilibrium s0 (higher infertility
+#' requires higher s0 to stabilize).
+#'
+#' ## Markov Breeding Cycle with Calf-Survival Coupling
+#'
+#' Each mature female carries a breeding state: S1 (pregnant), S2 (with dependent
+#' calf), or S3 (resting).  States transition each year:
+#' \enumerate{
+#'   \item \strong{S1 mothers give birth:} Transition to S2 with their first
+#'     offspring tracked as dependent calf (\code{calf_id}). If she gives birth
+#'     to multiple calves (litter_size > 1), only the first is tracked.
+#'   \item \strong{S2 mothers age the calf:} Each year, the dependent calf ages
+#'     by 1. The mother stays in S2 up to \code{weaning_age} years; once the calf
+#'     reaches \code{weaning_age}, or if the calf dies, the mother transitions
+#'     (see below).
+#'   \item \strong{S2 mothers transition to S1 or S3:} At the end of year k in
+#'     S2, if the calf is alive but below \code{weaning_age}, the mother conceives
+#'     with probability \code{psi_nurse} (if alive) or \code{psi_rest} (if calf
+#'     is dead).  If conception occurs, she transitions to S1 (pregnant) for the
+#'     next year.  If no conception, she transitions to S3 (resting) for up to 1
+#'     year, then returns to S1 with near certainty.
+#'   \item \strong{S3 mothers return to S1:} S3 mothers attempt conception with
+#'     probability 1.0 each year (effectively guaranteed to breed, resuming S1).
+#'   \item \strong{Newly mature females start in S3:} Newly matured females enter
+#'     the cycle at S3 (resting), never breeding in their first year of maturity.
+#'     This matches the biological constraint that dolphins cannot conceive until
+#'     the season after reaching reproductive maturity.
+#' }
+#'
+#' The S2 state lasts up to \code{weaning_age} years (default 1 if NULL,
+#' equivalent to 3-state cycle; can be 2+ for extended nursing).  The dependent
+#' calf also follows the mother's pod and superpod until independence (age
+#' \code{weaning_age}), creating social cohesion.
+#'
+#' Calf survival data is encoded in the \code{s2_year} column (internal): an
+#' S2 mother's calf survival depends on the mother's age k at her last
+#' conception.  This couples the demographic rates to individual history,
+#' creating realistic compensatory feedback.
+#'
+#' ## Social Structure
+#'
+#' **pod_size, superpod_size:** Fixed hierarchical structure.  Pods (family
+#' groups) are nested within superpods (mating communities).  Pod-to-superpod
+#' mapping is fixed at initialization and carried forward via \code{pod_to_sp}.
+#' Offspring inherit their mother's pod and superpod.
+#'
+#' **stickiness_year:** Between-year superpod fidelity (can be sex-specific
+#' \code{c(female, male)} or scalar).  This parameter applies only to individuals
+#' age \code{weaning_age} and above.  Each year, eligible individuals remain in
+#' their current superpod with probability \code{stickiness_year}; those that
+#' move (probability \code{1 - stickiness_year}) emigrate to a different superpod
+#' chosen uniformly at random (not within-pod reshuffling; this is true
+#' emigration).  A value of 1.0 means complete site fidelity; 0.0 means complete
+#' mixing.
+#'
+#' **weaning_age:** Age of independence from mother.  Dependent calves below this
+#' age are excluded from between-year superpod reshuffling (they follow the
+#' mother).  Also determines the maximum years a mother stays in S2.  If NULL,
+#' defaults to 1 year, effectively a 3-state breeding cycle; if 2+, extends to
+#' multi-year dependency (e.g., 4-state cycle for weaning_age = 2).
+#'
+#' ## Mating Systems
+#'
+#' **male_behavior:** Mating mode for assigning paternity.  \code{"random"}: any
+#' mature, fertile male in the superpod may sire offspring (polyandry controlled
+#' by \code{num_mates}).  \code{"strong_bull"}: one persistent bull per superpod
+#' sires all offspring; the bull is elected randomly from mature males (not
+#' age-based), giving realistic multi-year tenure.  Bullships persist until the
+#' bull dies or transitions to a different superpod.
+#'
+#' **max_females:** Per-year cap on mates per male.  If a male would exceed this
+#' number, excess offspring are reassigned to other males in the same superpod
+#' (or cross-superpod fallback if needed).  Enforces realistic operational
+#' constraints on male mating effort.
+#'
+#' ## Density Dependence (Pella-Tomlinson compensation)
+#'
+#' When \code{density_dependence = TRUE}, conception probabilities are adjusted
+#' each year based on depletion. The conception rate at time t is:
+#' \preformatted{
+#'   psi(t) = psi_K + delta_max * [1 - D(t)^z]
+#' }
+#' where:
+#' \itemize{
+#'   \item psi_K is the reference conception rate at carrying capacity K
+#'   \item delta_max is the maximum logit-scale shift (user-supplied)
+#'   \item D(t) = N_1+(t) / K_1+ is the depletion (age 1+ component)
+#'   \item z is z_pt, the Pella--Tomlinson shape (typically 2.39, IWC convention)
+#' }
+#'
+#' The shift is applied on the logit (log-odds) scale, preserving the odds ratio
+#' between \code{psi_nurse} and \code{psi_rest}.  At K, D(t) ≈ 1 so
+#' delta_max * \code{[1 - D(t)^z]} ≈ 0, and reference rates apply.  Below K,
+#' D(t) < 1 so the shift is positive, increasing conception rates (compensatory
+#' response). Above K, the shift is negative, decreasing conception rates.  With
+#' z = 2.39 (IWC convention), MNPL (Maximum Net Population Level) occurs at
+#' D ≈ 0.6, i.e., 60% of K.
+#'
+#' When \code{density_dependence = FALSE}, conception rates are constant
+#' (s0 calibration mode).
+#'
+#' The \code{dd_max} value may have been supplied directly to
+#' \code{create.stable.pop()} or solved automatically from a
+#' \code{target_interval} (observed calving interval at a reference depletion).
+#' Either way, the value stored in \code{sim_config$dd_max} is used here.
+#' \strong{The recommended path is to anchor via \code{target_interval} in
+#' \code{create.stable.pop()}} -- direct \code{dd_max} values have no
+#' biologically meaningful default and should generally be reserved for
+#' sensitivity analyses or theoretical runs.
+#'
+#' ## Automatic Burn-in and Snapshots
+#'
+#' The function automatically runs \code{2 * max_age} years of burn-in before the
+#' post-burn-in simulation begins.  Burn-in serves two purposes: (1) flush all
+#' founders (mother_id = 0, father_id = 0), which takes max_age years, and (2)
+#' let the age structure settle from Leslie-matrix equilibrium to the true
+#' stochastic equilibrium, which requires ~max_age additional years.
+#'
+#' Snapshots are requested by \code{sample_years}; the population summary covers
+#' all years (burn-in + post-burn-in).  Snapshots store full individual-level
+#' data: id, birth_year, age, sex, mat_age, mother_id, father_id, breed_state,
+#' fertile, population, calf_id, pod, superpod.  Internal column \code{s2_year}
+#' (used to track calf survival age) is excluded from snapshots.
+#'
+#' @return A named list (returned invisibly):
+#' \describe{
+#'   \item{pop_summary}{data.table: sex-specific numbers-at-age for all simulation years, including burn-in.}
+#'   \item{snapshots}{Named list of data.tables containing metadata for every simulated individual in each year specified by \code{sample_years}.}
+#'   \item{pod_to_sp}{Integer vector mapping pod -> superpod. This is used in \code{sample.pop} to shuffle animals around between sets and trips.}
+#'   \item{sim_config}{Passed through for \code{sample.pop()}.}
+#' }
+#'
+#' @references
+#' Pella, J. J., & Tomlinson, P. K. (1973). A generalized stock production
+#' model. Inter-American Tropical Tuna Commission Bulletin, 13, 422-458.
+#'
+#' Caswell, H. (2001). Matrix Population Models: Construction, Analysis, and
+#' Interpretation (2nd ed.). Sinauer Associates.
+#'
+#' Hoyle, S. D., & Maunder, M. N. (2004). A Bayesian approach to incorporating
+#' indices of abundance and uncertainty of process in stock assessment models.
+#' Canadian Journal of Fisheries and Aquatic Sciences, 61, 1388-1399.
+#'
+#' @importFrom data.table data.table set rbindlist copy
+#' @importFrom stats runif rpois
+#' @exportS3Method NULL
+#' @rawNamespace export(simulate.pop)
+simulate.pop <- function(sim_config,
                          num_years,
-                         female_fraction = 0.5,
-                         age_length_df = NULL,
-                         movement_array = NULL,
-                         infertility = 0,
-                         popstructure = "panmictic" #panmictic or "structured"
-                         ){
+                         sample_years = NULL,
+                         F_t = NULL,
+                         selectivity = NULL,
+                         init_depletion = NULL) {
 
-  # Save initial values as distinct R objects
-  init_pop_size <- input_data$numbers_at_age
-  max_age <- max(input_data$numbers_at_age$age)
-  f <- max(input_data$fecundity)
-  litter_size = input_data$litter_size
-#  YOY_survival <- input_data$s0
-#  juvenile_survival <- input_data$survival[2:(maturity_age)]
-#  adult_survival <- input_data$survival[maturity_age:(max_age-1)]
-#  ff <- f / female_fraction # Female fecundity per breeding event at equilibrium
-  survival_df <- tibble(age = c(0:max_age), survival_rate = input_data$survival)
+  # ═══════════════════════════════════════════════════════════════════════════
+  # INPUT VALIDATION
+  # ═══════════════════════════════════════════════════════════════════════════
 
-  # Make initial
-  init_ages <- rep(init_pop_size$age, times = init_pop_size$N)
-  init_pops <- rep(init_pop_size$population, times = init_pop_size$N)
-  init_sex <- sample(
-    c("F", "M"),
-    size = sum(init_pop_size$N),
-    prob = c(female_fraction, 1 - female_fraction),
-    replace = T)
-  init_repro_cycle <- sample(
-    c(1:mating_periodicity),
-    size = sum(init_pop_size$N),
-    replace = T)
-  init_fertile_vec <- runif(n = length(init_repro_cycle)) > infertility
+  if (!is.list(sim_config))
+    stop("`sim_config` must be a list (typically the output of create.stable.pop()).")
 
-  # Summarize population numbers
-  total_pop_sizes_df <- init_pop_size %>% group_by(population) %>%
-    reframe(total = sum(N, na.rm = T)) %>%
-    arrange(population)
+  required_fields <- c("max_age", "survival", "pop_size", "maturity_age",
+                        "litter_size", "psi_nurse", "psi_rest", "num_mates",
+                        "female_fraction", "infertility", "density_dependence")
+  missing_fields <- setdiff(required_fields, names(sim_config))
+  if (length(missing_fields) > 0L)
+    stop("`sim_config` is missing required fields: ",
+         paste(missing_fields, collapse = ", "),
+         ". Did you pass the output of create.stable.pop()?")
 
-  total_pop_sizes_vec <- rep(total_pop_sizes_df$population, times = total_pop_sizes_df$total)
+  if (!is.numeric(num_years) || length(num_years) != 1L ||
+      num_years < 1 || num_years != round(num_years))
+    stop("`num_years` must be a positive integer.")
 
-  ###############################################`
-  ####---------Set up initial population-----####
-  ###############################################`
-  # Initial population
-# init_pop <- tibble(
-#   indv_name   = sprintf("%020d", seq_len(sum(init_pop_size$N))),
-#   birth_year  = -1L,
-#   age         = init_ages,
-#   mother      = "xxxxx",
-#   father      = "xxxxx",
-#   sex         = init_sex,
-#   population  = total_pop_sizes_vec
-# ) %>%
-#   mutate(
-#     repro_cycle = if_else(
-#       sex == "F",
-#       init_repro_cycle[row_number()],
-#       NA_integer_
-#     ),
-#     fertile = init_fertile_vec
-#   )
+  if (!is.null(sample_years) && !is.numeric(sample_years))
+    stop("`sample_years` must be NULL, a positive integer, or an integer vector.")
 
-  init_pop <- tibble(
-    indv_name   = sprintf("%020d", seq_len(sum(init_pop_size$N))),
-    birth_year  = -1L,
-    age         = init_ages,
-    mother      = "xxxxx",
-    father      = "xxxxx",
-    sex         = init_sex,
-    population  = total_pop_sizes_vec
-  ) %>%
-    mutate(
-      repro_cycle = if_else(
-        sex == "F",
-        init_repro_cycle[row_number()],
-        NA_integer_
-      ),
-      fertile = init_fertile_vec
-    )
-
-  # TO DO: Add code to quickly and easily simulate initial starting lengths for all individuals from age_length_df (if supplied). Might want to just add to the tibble above, if can simulate in create_input_data.R script.
-# if(!is.null(age_length_df)){
-#   # Join with age.length table, assign age, and repro probability
-#   init_pop2 <- init_pop %>%
-#     lazy_dt() %>%
-#     left_join(age_length_df, by = "age") %>%
-#     mutate(indv_length = rtruncnorm(n(), mean = mean_length, sd = age_length_sd, a = 0.2)) %>% #Assign individual length -- make sure nobody grows backwards, so set lower limit of 0.2
-#     mutate(beta_0 = case_when(
-#       population == "MX" ~ MX.beta.0,
-#       population == "ES" ~ ES.beta.0,
-#       population == "EC" ~ EC.beta.0,
-#       TRUE ~ NA),
-#       beta_1 = case_when(
-#         population == "MX" ~ MX.beta.1,
-#         population == "ES" ~ ES.beta.1,
-#         population == "EC" ~ EC.beta.1,
-#         TRUE ~ NA)) %>% # Save values for growth curve so we can vectorize with case_when
-#     as_tibble() %>%
-#     mutate(repro_prob = case_when( # Store probability of reproduction
-#       age < 5 ~ 0, # No individuals younger than age 5 will reproduce (5 is an arbitrary number)
-#       age >= 5 ~ repro.prob(beta.0 = beta_0, beta.1 = beta_1, TLflex = indv_length),
-#       TRUE ~ NA))
-# }
-
-  ####----------Breeding----------####
-  repro_cycle_vec <- rep(1:mating_periodicity, times = num_years+1) # Generate a vector which will be used to determine if it is an even or odd breeding year (or a 1/3 breeding year)
-
-  ####--------- For year 0 breeding
-  #------------Mothers------------#
-  # Mothers with knife-edged maturity to allow the population to stay stable (at least for now)
-  if(!is.null(maturity_age)){
-  mothers <- init_pop %>% filter(sex == 'F',
-                                 age >= maturity_age,
-                                 fertile, # filters to only keep indvs with fertile == T, but is faster without the conditional statement
-                                 repro_cycle == repro_cycle_vec[1]) # Determine which females are available to breed in this year
+  # ── Fishing mortality validation ──
+  use_fishing <- !is.null(F_t)
+  if (use_fishing) {
+    if (is.null(selectivity))
+      stop("`selectivity` is required when `F_t` is supplied.")
+    if (!is.numeric(F_t))
+      stop("`F_t` must be numeric (scalar or vector of length `num_years`).")
+    if (any(F_t < 0))
+      stop("`F_t` values must be >= 0.")
+    if (length(F_t) != 1L && length(F_t) != num_years)
+      stop("`F_t` must be a scalar or a vector of length `num_years` (",
+           num_years, "). Got length ", length(F_t), ".")
+  }
+  if (!is.null(selectivity)) {
+    if (!is.numeric(selectivity))
+      stop("`selectivity` must be a numeric vector.")
+    if (any(selectivity < 0 | selectivity > 1))
+      stop("`selectivity` values must be between 0 and 1.")
+    # Length check deferred until max_age is extracted
   }
 
-  # TO DO: create vector of mothers from age-specific fecundity vector
-  mothers <- mothers %>% mutate(n_mates = sample(num_mates, size = n(), replace = TRUE)) # Assign random number of mates to each mother
+  # ── init_depletion validation ──
+  use_init_depletion <- !is.null(init_depletion) && init_depletion < 1
+  if (use_init_depletion) {
+    if (!is.numeric(init_depletion) || length(init_depletion) != 1L ||
+        init_depletion <= 0 || init_depletion > 1)
+      stop("`init_depletion` must be a single number in (0, 1].")
+    if (!isTRUE(sim_config$density_dependence))
+      stop("`init_depletion` requires `density_dependence = TRUE`.")
+    if (!use_fishing)
+      stop("`init_depletion` requires `F_t` (otherwise the population ",
+           "recovers to K immediately).")
+  }
 
-  # Make a new dataframe where each row corresponds to an instance of mating
-  # mothers2 <- mothers %>%
-  #   lazy_dt() %>%
-  #   group_by(indv_name) %>%
-  #   slice(rep(1:n(), n_mates)) %>%
-  #   ungroup() %>%
-  #   select(indv_name, population) %>%
-  #   rename(mother = indv_name) %>%
-  #   as_tibble()
+  # ═══════════════════════════════════════════════════════════════════════════
+  # EXTRACT PARAMETERS FROM sim_config
+  # ═══════════════════════════════════════════════════════════════════════════
 
-  mothers2 <- mothers %>%
-    tidyr::uncount(n_mates, .remove = FALSE) %>%
-    select(indv_name, population) %>%
-    rename(mother = indv_name)
+  max_age         <- sim_config$max_age
+  survival        <- sim_config$survival
+  pop_size        <- sim_config$pop_size
+  maturity_age    <- sim_config$maturity_age
+  litter_size     <- sim_config$litter_size
+  psi_nurse       <- sim_config$psi_nurse
+  psi_rest        <- sim_config$psi_rest
+  num_mates       <- sim_config$num_mates
+  female_fraction <- sim_config$female_fraction
+  pod_size_target <- sim_config$pod_size
+  superpod_size   <- sim_config$superpod_size
+  stickiness_year <- sim_config$stickiness_year
+  male_behavior   <- sim_config$male_behavior
+  max_females     <- sim_config$max_females
+  weaning_age     <- sim_config$weaning_age
+  infertility     <- sim_config$infertility
 
-  # total litter size per reproductive female (guaranteed >= 1)
-  litters <- mothers2 %>%
-    distinct(mother, population) %>%
-    mutate(
-      litter_size = 1 + rpois(n(), lambda = litter_size - 1)
-    )
+  # ── Density dependence parameters ──
+  use_dd <- isTRUE(sim_config$density_dependence)
+  if (use_dd) {
+    psi_nurse_K      <- sim_config$psi_nurse_K
+    psi_rest_K       <- sim_config$psi_rest_K
+    logit_psi_nurse_K <- qlogis(psi_nurse_K)
+    logit_psi_rest_K  <- qlogis(psi_rest_K)
+    z_pt             <- sim_config$z_pt
+    dd_max           <- sim_config$dd_max
+    K_1plus          <- sim_config$K_1plus
+  }
 
-  #------------Fathers------------#
-  fathers <- init_pop %>% filter(sex=='M',
-                                 age >= maturity_age
-                                 ) %>% # Uncomment for age-based maturity
-    select(indv_name, population)
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SETUP
+  # ═══════════════════════════════════════════════════════════════════════════
 
-    # Create dataframe of mating events and generate initial offspring from each mating event
-    YOY_df <- create.YOY(mothers2, fathers, litters, year = 0)
+  use_pods    <- !is.null(pod_size_target)
+  use_weaning <- !is.null(weaning_age)
+  wa          <- if (use_weaning) weaning_age else 0L
 
-  # This dataframe holds the population at the end of the first year of the simulation
-  year_end_pop_0 <- bind_rows(init_pop, YOY_df)
+  # Effective weaning age for the breeding cycle (S2 duration)
+  wa_breed <- if (is.null(weaning_age)) 1L else as.integer(weaning_age)
 
-  # And finally, we assign age-specific mortality rates to each individual and then determine whether they survive into the next year or not
-  loopy_pop <- year_end_pop_0
+  # When DD is active, psi_nurse_K/psi_rest_K are the at-K rates.
+  # When DD is off, use the raw psi_nurse/psi_rest values.
+  psi_nurse_init <- if (use_dd) psi_nurse_K else psi_nurse
+  psi_rest_init  <- if (use_dd) psi_rest_K  else psi_rest
 
-  # At the end of year 0 ...
-  message(paste("year 0, Population ", names(table(loopy_pop$population)), ": N_mothers=", table(mothers2$population), ", N_pups=", table(YOY_df$population), ", Total N=", table(loopy_pop$population) , sep=""))
+  # Total simulation = burn-in (2 × max_age) + post-burn-in (num_years)
+  burn_in     <- 2L * max_age
+  total_years <- burn_in + num_years
 
+  # ── Parse sample_years ──
+  if (is.null(sample_years)) {
+    s_years <- integer(0)
+  } else if (length(sample_years) == 1L) {
+    s_years <- seq.int(total_years - sample_years + 1L, total_years)
+  } else {
+    s_years <- as.integer(sample_years)
+  }
+  do_snapshots <- length(s_years) > 0L
 
-  #############################################################`
-  ####---------Loop through remaining simulation years-----####
-  #############################################################`
+  if (do_snapshots && min(s_years) <= burn_in) {
+    warning(sprintf(
+      "Snapshot year %d is within the %d-year burn-in. Population may not be at equilibrium.",
+      min(s_years), burn_in
+    ))
+  }
 
-  pop_size <- data.frame() # Initialize dataframe for storing population size
+  surv_vec <- survival
 
-  loopy_list <- list() # Make list to store dataframe of population for each year, where each element corresponds to the year e.g. loopy.list[[1]] is the population from the first year -- to save space, we won't populate this for now
-  plot_list <- list() # If we want to plot number of mature/breeding females/males each year for each iteration
+  # ── Fishing mortality schedule ──
+  if (use_fishing) {
+    sel_vec <- selectivity
+    if (length(sel_vec) != max_age + 1L)
+      stop("`selectivity` must have length max_age + 1 (", max_age + 1L,
+           "). Got length ", length(sel_vec), ".")
 
-  samples_df <- NULL
+    # Expand scalar F_t to a post-burn-in vector
+    if (length(F_t) == 1L) {
+      F_t_post <- rep(F_t, num_years)
+      F_scalar <- F_t
+    } else {
+      F_t_post <- F_t
+      F_scalar <- F_t[1]
+    }
 
-  parents_tibble <- tibble() # This will store info on offspring distribution per parent
-  moms_temp = dads_temp <- NULL
+    # Build F_schedule covering all years (burn-in + post-burn-in)
+    if (use_init_depletion) {
+      # Fishing active throughout (maintain depleted state during burn-in)
+      F_schedule <- c(rep(F_scalar, burn_in), F_t_post)
+    } else {
+      # Fishing only during post-burn-in
+      F_schedule <- c(rep(0, burn_in), F_t_post)
+    }
+  } else {
+    sel_vec    <- rep(0, max_age + 1L)
+    F_schedule <- rep(0, total_years)
+  }
 
-  for(v in 1:num_years){ # Loop through all of the years in the simulation - the burn in and the years that matter
+  # ── Parse sex-specific stickiness_year ──
+  if (!is.null(stickiness_year)) {
+    if (length(stickiness_year) == 1L) {
+      stick_yr_F <- stick_yr_M <- stickiness_year
+    } else {
+      stick_yr_F <- stickiness_year[1]
+      stick_yr_M <- stickiness_year[2]
+    }
+  }
 
-    # Assign survival or mortality based on age-specific survival probabilities
-    data1 <- loopy_pop %>% left_join(survival_df, by = "age") %>%
-      mutate(survival = runif(n()) <= survival_rate) %>%
-      dplyr::filter(survival) %>%
-      mutate(age = age + 1) %>%
-      select(-c(survival_rate, survival))
-    #If individuals are older than max_age, they will be killed after they reproduce
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PARSE MATURITY SPECIFICATION
+  # ═══════════════════════════════════════════════════════════════════════════
 
-    ####----------Breeding----------####
-    #------------Mothers------------#
-    mothers <- data1 %>% filter(sex == 'F',
-                                age >= maturity_age,
-                                fertile, # filters to only keep indvs with fertile == T, but is faster without the conditional statement
-                                repro_cycle == repro_cycle_vec[v + 1]) # Determine which females are available to breed in this year
+  make_ogive <- function(x, max_a) {
+    n <- max_a + 1L
+    if (length(x) == 1L && x == round(x)) {
+      ogive <- rep(0, n)
+      if (x <= max_a) ogive[seq(x + 1L, n)] <- 1
+      return(ogive)
+    }
+    if (length(x) == n) return(x)
+    stop("maturity_age: ogive vector must have length max_age + 1 (", n, ").")
+  }
 
-    # Add column that contains the number of mates each mother will mate with this year
-    mothers <- mothers %>% mutate(n_mates = sample(num_mates, size = nrow(mothers), replace = TRUE))
+  if (is.list(maturity_age)) {
+    ogive_f <- make_ogive(maturity_age$female, max_age)
+    ogive_m <- make_ogive(maturity_age$male, max_age)
+  } else {
+    ogive_f <- make_ogive(maturity_age, max_age)
+    ogive_m <- ogive_f
+  }
 
-    # Make a new row where each row corresponds to an instance of mating
-    # mothers2 <- mothers %>%
-    #   lazy_dt() %>%
-    #   group_by(indv_name) %>%
-    #   slice(rep(1:n(), n_mates)) %>%
-    #   ungroup() %>%
-    #   select(indv_name, population) %>%
-    #   rename(mother = indv_name) %>%
-    #   as_tibble()
+  sample_mat_ages <- function(ogive, n) {
+    pmf     <- diff(c(0, ogive))
+    p_never <- 1 - sum(pmf)
+    if (p_never > 0.001) {
+      pmf  <- c(pmf, p_never)
+      ages <- c(0:max_age, max_age + 1L)
+    } else {
+      ages <- 0:max_age
+      pmf[length(pmf)] <- pmf[length(pmf)] + p_never
+    }
+    sample(ages, n, replace = TRUE, prob = pmf)
+  }
 
-    mothers2 <- mothers %>%
-      tidyr::uncount(n_mates, .remove = FALSE) %>%
-      select(indv_name, population) %>%
-      rename(mother = indv_name)
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PARSE INFERTILITY
+  # ═══════════════════════════════════════════════════════════════════════════
 
-    # total litter size per reproductive female (guaranteed >= 1)
-    litters <- mothers2 %>%
-      distinct(mother, population) %>%
-      mutate(
-        litter_size = 1 + rpois(n(), lambda = litter_size - 1)
-      )
+  if (length(infertility) == 1L) {
+    infertility_f <- infertility_m <- infertility
+  } else {
+    infertility_f <- infertility[1]
+    infertility_m <- infertility[2]
+  }
 
-    #------------Fathers------------#
-    fathers <- data1 %>% dplyr::filter(sex=='M',
-                                       age >= maturity_age
-    ) %>% # Uncomment for age-based maturity
-      select(indv_name, population)
+  # ═══════════════════════════════════════════════════════════════════════════
+  # BREEDING CYCLE — STATIONARY DISTRIBUTION
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Same breeding_stationary helper as in create.stable.pop(): builds the
+  # (wa_breed + 2)-state Markov chain and solves for the stationary dist.
 
-    # Create dataframe of mating events and generate initial offspring from each mating event
-    YOY_df <- create.YOY(mothers2, fathers, litters, year = v)
+  breeding_stationary <- function(psi_n, psi_r, sv, w_b) {
+    n_st <- w_b + 2L
+    P <- matrix(0, nrow = n_st, ncol = n_st)
+    P[1, 2] <- 1
+    for (k in seq_len(w_b)) {
+      row   <- k + 1L
+      ell_k <- sv[k]
+      psi_k <- ell_k * psi_n + (1 - ell_k) * psi_r
+      P[row, 1] <- psi_k
+      if (k < w_b) {
+        P[row, row + 1] <- ell_k * (1 - psi_n)
+        P[row, n_st]    <- (1 - ell_k) * (1 - psi_r)
+      } else {
+        P[row, n_st] <- 1 - psi_k
+      }
+    }
+    P[n_st, 1]    <- psi_r
+    P[n_st, n_st] <- 1 - psi_r
+    ev  <- eigen(t(P))
+    idx <- which.min(abs(Mod(ev$values) - 1))
+    pi  <- Mod(ev$vectors[, idx])
+    pi / sum(pi)
+  }
 
-    #Only bother assigning a sampling location for the years we're taking samples; otherwise just slows down code.
-    ## TO DO: ADD SAMPLE YEAR AND SITE INFORMATION THEN UNCOMMENT AND UPDATE BELOW
+  pi_stat <- breeding_stationary(psi_nurse_init, psi_rest_init, surv_vec, wa_breed)
+  pi_1    <- pi_stat[1]
+  n_breed_states <- length(pi_stat)
 
-    # if(v >= min(sample_years)){
-    #
-    #   # YOY from the same mother are assigned to the same sampling location
-    #   YOY_df <- YOY_df %>% group_by(mother, population) %>%
-    #     mutate(
-    #       sampling_location = sample(
-    #         sampling_locations,
-    #         1,
-    #         prob = c(dispersal_kernel(age = 0, birth_population = population[1])),
-    #         replace = TRUE)
-    #     ) %>%
-    #     ungroup()
-    #
-    #   #Pull out mothers and assign them the same sampling location as their offspring from this year
-    #   mother_sample_df <- YOY_df %>% select(indv_name = mother, sampling_location) %>% distinct()
-    #
-    #   mothers_df <- mother_sample_df %>% lazy_dt() %>%
-    #     left_join(mothers, by = "indv_name") %>%
-    #     select(-num_mates) %>%
-    #     as_tibble()
-    #
-    #   #Assign all other individuals assigned randomly
-    #   loopy_pop <- data1 %>%
-    #     lazy_dt() %>%
-    #     filter(!indv_name %chin% YOY_df$mother) %>%
-    #     mutate(
-    #       sampling_location = map2_chr(
-    #         age,
-    #         population,
-    #         ~sample(
-    #           sampling_locations,
-    #           1,
-    #           prob = c(dispersal_kernel(.x, .y)),
-    #           replace = TRUE
-    #         ))
-    #     ) %>%
-    #     as_tibble() %>%
-    #     bind_rows(YOY_df, mothers_df)
-    #
-    #
-    # } else {
-    #
-    #   # No need to assign sampling location if we're not sampling this year
-       loopy_pop <- bind_rows(data1, YOY_df)
-    #
-    # }
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STABLE AGE DISTRIBUTION (Leslie matrix)
+  # ═══════════════════════════════════════════════════════════════════════════
 
-    ###############################################`
-    ####---------------Sampling----------------####
-    ###############################################`
-    # if(v %in% sample_years){
-    #
-    #   samples_df_temp <- loopy_pop %>%
-    #     group_by(sampling_location) %>%
-    #     group_map(~sample_fixed(.x, samples_vec[.y$sampling_location[1]]), .keep = TRUE) %>%
-    #     bind_rows() %>%
-    #     mutate(capture_year = v)
-    #
-    #   samples_df <- bind_rows(samples_df, samples_df_temp)
-    #
-    # }
+  n_classes <- max_age + 1L
+  A <- matrix(0, nrow = n_classes, ncol = n_classes)
 
+  ff <- litter_size * female_fraction * pi_1 * (1 - infertility_f)
+  ogive_f_leslie <- c(0, ogive_f[seq_len(max_age)])
+  f_vec <- ogive_f_leslie * ff
 
-    ###############################################`
-    ####-------------Save metrics--------------####
-    ###############################################`
+  A[1, ] <- f_vec
+  for (i in seq_len(max_age)) A[i + 1L, i] <- survival[i]
 
-    # Calculate number of produced offspring per mother and father this year
-    moms_temp <- YOY_df %>%
-      count(mother, population, name = "num_off") %>%
-      mutate(
-        indv_name = mother,
-        population,
-        num_off,
-        year = v,
-        which_parent = "mother",
-        .keep = "none"
-      )
+  w_eig    <- Mod(eigen(A)$vectors[, 1])
+  stable_A <- w_eig / sum(w_eig)
 
-    dads_temp <- YOY_df %>%
-      count(father, population, name = "num_off") %>%
-      mutate(
-        indv_name = father,
-        population,
-        num_off,
-        year = v,
-        which_parent = "father",
-        .keep = "none"
-      )
+  # ── Depleted initialization: fished stable age distribution ──
+  if (use_init_depletion) {
+    # DD-shifted conception rates at init_depletion
+    shift_init     <- dd_max * (1 - init_depletion^z_pt)
+    psi_nurse_dep  <- plogis(logit_psi_nurse_K + shift_init)
+    psi_rest_dep   <- plogis(logit_psi_rest_K  + shift_init)
 
-    # Add to the tibble of offspring distribution - can use to check if/whether some indvs are reproducing much more
-    #   parents.tibble <- rbind(parents.tibble, moms.temp, dads.temp)
+    # Fished survival
+    surv_fished <- survival * exp(-F_scalar * sel_vec)
 
-    # Print info about the population to the console
-    message(paste("\nyear", v, " ", names(table(loopy_pop$population)),
-              "N_mothers=", table(moms_temp$population),
-              "N_fathers=", table(dads_temp$population),
-              "\nN_pups=", table(YOY_df$population),
-              "\nTotal N= ", table(loopy_pop$population), sep=" "))
+    # Rebuild Leslie with fished survival and DD-shifted fecundity
+    A_dep <- matrix(0, n_classes, n_classes)
+    pi_stat_dep <- breeding_stationary(psi_nurse_dep, psi_rest_dep,
+                                        surv_fished, wa_breed)
+    pi_1_dep <- pi_stat_dep[1]
+    ff_dep   <- litter_size * female_fraction * pi_1_dep * (1 - infertility_f)
+    A_dep[1, ] <- ogive_f_leslie * ff_dep
+    for (i in seq_len(max_age)) A_dep[i + 1L, i] <- surv_fished[i]
 
-    # Save the population size by age and sex
-    pop_size <- loopy_pop %>% dplyr::count(population, sex, age)
+    w_dep    <- Mod(eigen(A_dep)$vectors[, 1])
+    stable_A <- w_dep / sum(w_dep)
 
-    # For checking that male maturity isn't changing over the simulation (this was a bug earlier) ...
-    # plot.list[[v]] <- data1 %>% dplyr::filter(sex=='M') %>%
-    #   mutate(unif = runif(n()),
-    #          repro = case_when(
-    #            unif < repro_prob ~ "yes",
-    #            .default = "no"
-    #          )) %>%
-    #   gghistogram(x = c("repro_prob")) +
-    #   ggtitle(paste0("Year ", v))
+    # Override breeding stats for initialization
+    psi_nurse_init <- psi_nurse_dep
+    psi_rest_init  <- psi_rest_dep
+    pi_stat        <- pi_stat_dep
+    n_breed_states <- length(pi_stat)
 
-    # When I figure out how to efficiently store this info for a large population, then I will uncomment this.
-    #loopy.list[[v]] <- loopy.pop
+    # Scale population size (K_1plus stays as unfished reference)
+    pop_size <- round(pop_size * init_depletion)
 
-  } # End loop over sim years
+    message(sprintf(
+      "Depleted initialization: D = %.2f, N0 = %s (fished age structure)",
+      init_depletion, format(pop_size, big.mark = ",")
+    ))
+  }
 
-  # Label the list elements with the year
-  # names(loopy.list) <- paste0("year.end.pop.", seq(1:(burn.in + Num.years)), "_iteration_", iter)
+  # ═══════════════════════════════════════════════════════════════════════════
+  # INITIALISE POPULATION
+  # ═══════════════════════════════════════════════════════════════════════════
 
-  return(invisible(list(pop_size, samples_df)))
+  init_N    <- pmax(round(stable_A * pop_size), 0L)
+  init_ages <- rep(0:max_age, times = init_N)
+  n_init    <- sum(init_N)
+
+  init_sex <- sample(c("F", "M"), n_init,
+                     prob = c(female_fraction, 1 - female_fraction),
+                     replace = TRUE)
+
+  init_mat_age <- integer(n_init)
+  is_f <- init_sex == "F"
+  init_mat_age[is_f]  <- sample_mat_ages(ogive_f, sum(is_f))
+  init_mat_age[!is_f] <- sample_mat_ages(ogive_m, sum(!is_f))
+
+  init_fertile <- rep(TRUE, n_init)
+  if (infertility_f > 0) init_fertile[is_f]  <- runif(sum(is_f))  >= infertility_f
+  if (infertility_m > 0) init_fertile[!is_f] <- runif(sum(!is_f)) >= infertility_m
+
+  # Assign breeding states from the full stationary distribution
+  init_breed_state <- rep(NA_integer_, n_init)
+  init_s2_year     <- rep(NA_integer_, n_init)
+  init_calf_id     <- rep(0L, n_init)
+
+  mature_f <- which(is_f & init_ages >= init_mat_age & init_fertile)
+  if (length(mature_f) > 0L) {
+    state_idx <- sample(seq_len(n_breed_states), length(mature_f),
+                        replace = TRUE, prob = pi_stat)
+    bs <- ifelse(state_idx == 1L, 1L,
+                 ifelse(state_idx == n_breed_states, 3L, 2L))
+    s2y <- ifelse(bs == 2L, state_idx - 1L, NA_integer_)
+    init_breed_state[mature_f] <- bs
+    init_s2_year[mature_f]     <- s2y
+    # Founder S2 mothers: calf_id = 0 (no tracked calf)
+  }
+
+  pop <- data.table(
+    id              = seq_len(n_init),
+    birth_year      = 0L,
+    age             = init_ages,
+    sex             = init_sex,
+    mat_age         = init_mat_age,
+    mother_id       = 0L,
+    father_id       = 0L,
+    breed_state     = init_breed_state,
+    fertile         = init_fertile,
+    population      = 1L,
+    calf_id         = init_calf_id,
+    s2_year         = init_s2_year,
+    pending_fathers = vector("list", n_init)
+  )
+
+  # ── Pod / superpod initialisation ──
+  pod_to_sp <- NULL
+  n_sp      <- 0L
+
+  if (use_pods) {
+    n_pods <- max(1L, round(n_init / pod_size_target))
+    n_sp   <- max(1L, ceiling(n_pods / superpod_size))
+
+    pod_vec   <- rep(seq_len(n_pods), length.out = n_init)
+    pod_to_sp <- rep(seq_len(n_sp), each = superpod_size, length.out = n_pods)
+
+    set(pop, j = "pod",      value = pod_vec)
+    set(pop, j = "superpod", value = pod_to_sp[pod_vec])
+  }
+
+  # ── Mating-system bookkeeping (bull tenure registry, strong_bull mode) ──
+  bull_registry <- NULL
+  if (use_pods && !is.null(male_behavior) && male_behavior == "strong_bull") {
+    bull_registry <- rep(0L, n_sp)
+  }
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # PATERNITY ASSIGNMENT AT CONCEPTION
+  # ═══════════════════════════════════════════════════════════════════════
+  # Paternity (mate selection, the max_females-per-year cap, and strong_bull
+  # tenure) is resolved once, at the moment of conception, using whichever
+  # males are alive/mature/fertile *at that time*.  This matters for CKMR:
+  # kinship probabilities condition on who was alive when offspring were
+  # conceived, not on who happens to still be alive a year later when the
+  # calf is actually born.  The result is stashed per-mother in
+  # `pending_fathers` (a list column: one integer vector of father ids per
+  # prospective offspring in her litter) and realized into actual offspring
+  # rows the following year, once she is found in breed_state S1 (see the
+  # birth step in the main loop below).
+  assign_pending_fathers <- function(pop, conceiving_idx, bull_registry) {
+    n_conceive <- length(conceiving_idx)
+    if (n_conceive == 0L) return(list(pop = pop, bull_registry = bull_registry))
+
+    mature_male_mask <- pop$sex == "M" & pop$age >= pop$mat_age & pop$fertile
+    if (!any(mature_male_mask)) {
+      # No mature/fertile males available at conception: these pregnancies
+      # cannot be assigned a father. pending_fathers stays empty (NULL) for
+      # them, so no offspring will be realized for them at birth.
+      return(list(pop = pop, bull_registry = bull_registry))
+    }
+
+    n_mates_vec  <- sample(num_mates, n_conceive, replace = TRUE)
+    litter_sizes <- 1L + rpois(n_conceive, lambda = litter_size - 1)
+    max_nm       <- max(n_mates_vec)
+
+    father_mat <- matrix(NA_integer_, nrow = n_conceive, ncol = max_nm)
+
+    if (use_pods) {
+      mother_superpods <- pop$superpod[conceiving_idx]
+      all_mature_ids   <- pop$id[mature_male_mask]
+      all_mature_sps   <- pop$superpod[mature_male_mask]
+
+      if (!is.null(male_behavior) && male_behavior == "strong_bull") {
+        # ── Strong bull mode ──
+        alive_ids <- pop$id
+        bull_registry[!bull_registry %in% c(0L, alive_ids)] <- 0L
+
+        vacant <- which(bull_registry == 0L)
+        if (length(vacant) > 0L) {
+          mature_males_dt <- data.table(
+            id       = all_mature_ids,
+            age      = pop$age[mature_male_mask],
+            superpod = all_mature_sps
+          )
+          candidates <- mature_males_dt[
+            superpod %in% vacant,
+            # Indexing by position avoids sample()'s length-1 numeric footgun.
+            .(bull_id = id[sample.int(.N, 1L)]),
+            by = superpod
+          ]
+          if (nrow(candidates) > 0L) {
+            bull_registry[candidates$superpod] <- candidates$bull_id
+          }
+        }
+
+        for (sp in unique(mother_superpods)) {
+          sp_mask <- which(mother_superpods == sp)
+          bull_id <- bull_registry[sp]
+          if (bull_id == 0L)
+            bull_id <- all_mature_ids[sample.int(length(all_mature_ids), 1L)]
+          father_mat[sp_mask, ] <- bull_id
+        }
+
+      } else {
+        # ── Random mating mode ──
+        father_by_sp <- split(all_mature_ids, all_mature_sps)
+        for (sp in unique(mother_superpods)) {
+          sp_mask   <- which(mother_superpods == sp)
+          n_sp_moms <- length(sp_mask)
+          pool      <- father_by_sp[[as.character(sp)]]
+          if (is.null(pool) || length(pool) == 0L) pool <- all_mature_ids
+          father_mat[sp_mask, ] <-
+            pool[sample.int(length(pool), n_sp_moms * max_nm, replace = TRUE)]
+        }
+      }
+
+    } else {
+      # ── No pod structure: global random mating ──
+      all_father_ids <- pop$id[mature_male_mask]
+      father_mat[]   <-
+        all_father_ids[sample.int(length(all_father_ids), n_conceive * max_nm,
+                                   replace = TRUE)]
+    }
+
+    # ── Assign each prospective offspring in the litter a father ──
+    n_off          <- sum(litter_sizes)
+    off_mother_idx <- rep(seq_len(n_conceive), times = litter_sizes)
+    off_n_mates    <- n_mates_vec[off_mother_idx]
+    mate_col       <- as.integer(ceiling(runif(n_off) * off_n_mates))
+    off_father_id  <- father_mat[cbind(off_mother_idx, mate_col)]
+
+    # ── Enforce max_females cap (per breeding season, at time of mating) ──
+    if (!is.null(max_females)) {
+      fid_tab  <- table(off_father_id)
+      over_ids <- as.integer(names(fid_tab[fid_tab > max_females]))
+
+      if (length(over_ids) > 0L) {
+        if (use_pods) {
+          avail_by_sp <- split(all_mature_ids, all_mature_sps)
+        }
+        for (fid in over_ids) {
+          idx  <- which(off_father_id == fid)
+          keep <- sample(idx, max_females)
+          redo <- setdiff(idx, keep)
+          for (ri in redo) {
+            if (use_pods) {
+              mom_sp <- pop$superpod[conceiving_idx[off_mother_idx[ri]]]
+              pool   <- avail_by_sp[[as.character(mom_sp)]]
+              pool   <- pool[pool != fid]
+              if (is.null(pool) || length(pool) == 0L)
+                pool <- all_mature_ids[all_mature_ids != fid]
+            } else {
+              pool <- all_father_ids[all_father_ids != fid]
+            }
+            if (length(pool) > 0L)
+              off_father_id[ri] <- pool[sample.int(length(pool), 1L)]
+          }
+        }
+      }
+    }
+
+    # ── Store each mother's prospective litter of fathers as a list-column ──
+    father_lists <- unname(split(off_father_id, off_mother_idx))
+    set(pop, i = conceiving_idx, j = "pending_fathers", value = father_lists)
+
+    list(pop = pop, bull_registry = bull_registry)
+  }
+
+  # Founders that start pregnant (breed_state == 1) had no simulated
+  # conception step (it happened before the simulation began); use the
+  # initial population itself as the best available approximation of who
+  # was alive/mature/fertile at that (unobserved) conception.
+  init_conceiving <- which(pop$breed_state == 1L)
+  if (length(init_conceiving) > 0L) {
+    res_init      <- assign_pending_fathers(pop, init_conceiving, bull_registry)
+    pop           <- res_init$pop
+    bull_registry <- res_init$bull_registry
+  }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PRE-ALLOCATE OUTPUT STORAGE
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  pop_counts <- vector("list", total_years)
+  snapshots  <- if (do_snapshots) vector("list", length(s_years)) else list()
+  snap_names <- character(0)
+  snap_idx   <- 0L
+  next_id    <- n_init + 1L
+
+  depletion_vec <- if (use_dd) numeric(total_years) else NULL
+
+  # Columns to drop from snapshots (internal tracking only)
+  internal_cols <- c("s2_year", "pending_fathers")
+
+  message(sprintf(
+    "Starting simulation: %d years burn-in (2 x max_age) + %d years = %d total  (N0 = %s)",
+    burn_in, num_years, total_years, format(n_init, big.mark = ",")
+  ))
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # MAIN SIMULATION LOOP
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Each iteration = one year.  The order of operations:
+  #   1. Survival (stochastic; natural + fishing as competing hazard)
+  #   2. Aging (deterministic; survivors age by one year)
+  #  2b. Orphan mortality (dependent calves whose mothers died or aged out)
+  #   3. Between-year superpod reshuffling + cow-calf following
+  #   4. Density-dependent conception adjustment (if DD active)
+  #   5. Markov breeding state transitions (calf-survival-dependent)
+  #   6. Create offspring (with full parentage tracking)
+  #   7. Store snapshot (if this year is a snapshot year)
+  #   8. Record population summary statistics
+
+  for (yr in seq_len(total_years)) {
+
+    # ─── 1. Survival (natural + fishing) ─────────────────────────────────
+    if (use_fishing && F_schedule[yr] > 0) {
+      # Competing hazard: S_total = exp(-M) * exp(-F*sel) = exp(-(M + F*sel))
+      rates <- surv_vec[pop$age + 1L] *
+        exp(-F_schedule[yr] * sel_vec[pop$age + 1L])
+    } else {
+      rates <- surv_vec[pop$age + 1L]
+    }
+    alive <- runif(nrow(pop)) <= rates
+    pop   <- pop[alive]
+
+    # ─── 2. Aging ─────────────────────────────────────────────────────
+    set(pop, j = "age", value = pop$age + 1L)
+    pop <- pop[pop$age <= max_age]
+
+    if (nrow(pop) == 0L) stop("Population went extinct in year ", yr, ".")
+
+    # ─── 2b. Orphan mortality: dependent calves die if mother dies ────
+    # Placed AFTER aging + max_age removal so that mothers who age out
+    # also trigger orphan mortality. Uses age <= weaning_age (post-aging)
+    # to catch calves that were 0..(weaning_age-1) before aging.
+    if (use_weaning) {
+      dep_idx <- which(pop$age <= weaning_age & pop$mother_id != 0L)
+      if (length(dep_idx) > 0L) {
+        orphans <- dep_idx[!pop$mother_id[dep_idx] %in% pop$id]
+        if (length(orphans) > 0L) pop <- pop[-orphans]
+      }
+    }
+
+    # ─── 3. Between-year superpod reshuffling + cow-calf following ───────
+    if (use_pods && !is.null(stickiness_year)) {
+      elig <- which(pop$age >= wa)
+      if (length(elig) > 0L) {
+        elig_sex  <- pop$sex[elig]
+        stay_prob <- ifelse(elig_sex == "F", stick_yr_F, stick_yr_M)
+        movers    <- elig[runif(length(elig)) > stay_prob]
+
+        if (length(movers) > 0L) {
+          current_sp <- pop$superpod[movers]
+          all_pods   <- unique(pop$pod)
+          other_pool <- lapply(
+            split(all_pods, pod_to_sp[all_pods]),
+            function(x) all_pods[!all_pods %in% x]
+          )
+          new_pods <- integer(length(movers))
+          for (sp in unique(current_sp)) {
+            mask <- which(current_sp == sp)
+            pool <- other_pool[[as.character(sp)]]
+            if (is.null(pool) || length(pool) == 0L) pool <- all_pods
+            # Note: sample(pool, n) would misbehave if pool has length 1 (R
+            # reinterprets a length-1 numeric x as the range 1:x). Indexing
+            # by position avoids this.
+            new_pods[mask] <- pool[sample.int(length(pool), length(mask), replace = TRUE)]
+          }
+          set(pop, i = movers, j = "pod",      value = new_pods)
+          set(pop, i = movers, j = "superpod", value = pod_to_sp[new_pods])
+        }
+      }
+
+      # Cow-calf following: dependent calves follow mother's pod/superpod
+      if (use_weaning) {
+        dep_idx <- which(pop$age < weaning_age & pop$mother_id != 0L)
+        if (length(dep_idx) > 0L) {
+          dep_mother_ids     <- pop$mother_id[dep_idx]
+          mother_rows_in_pop <- match(dep_mother_ids, pop$id)
+          has_living_mother  <- !is.na(mother_rows_in_pop)
+          if (any(has_living_mother)) {
+            update_idx   <- dep_idx[has_living_mother]
+            mother_rows_ <- mother_rows_in_pop[has_living_mother]
+            set(pop, i = update_idx, j = "pod",      value = pop$pod[mother_rows_])
+            set(pop, i = update_idx, j = "superpod", value = pop$superpod[mother_rows_])
+          }
+        }
+      }
+    }
+
+    # ─── 4. Density-dependent conception adjustment ─────────────────────
+    if (use_dd) {
+      N_1plus <- sum(pop$age >= 1L)
+      D_t     <- N_1plus / K_1plus
+      delta_t <- dd_max * (1 - D_t^z_pt)
+      psi_nurse_yr <- plogis(logit_psi_nurse_K + delta_t)
+      psi_rest_yr  <- plogis(logit_psi_rest_K  + delta_t)
+      depletion_vec[yr] <- D_t
+    } else {
+      psi_nurse_yr <- psi_nurse
+      psi_rest_yr  <- psi_rest
+    }
+
+    # ─── 5. Markov breeding state transitions ────────────────────────────
+    # IMPORTANT: All state groups are identified BEFORE any transitions are
+    # applied.  This prevents double transitions within a single year.
+
+    # Newly mature, fertile females enter at S3 (resting)
+    new_mature <- which(pop$sex == "F" & pop$age == pop$mat_age &
+                          is.na(pop$breed_state) & pop$fertile)
+    if (length(new_mature) > 0L) {
+      set(pop, i = new_mature, j = "breed_state", value = 3L)
+    }
+
+    # Snapshot current states before any transitions
+    mother_rows <- which(pop$breed_state == 1L)   # S1: pregnant → will give birth
+    s2_idx      <- which(pop$breed_state == 2L)   # S2: with calf
+    s3_idx      <- which(pop$breed_state == 3L)   # S3: resting
+
+    # ── S2 transitions: calf-survival-dependent ──
+    # For each S2 mother, check if her calf is still alive. The calf's fate
+    # determines whether the mother uses psi_nurse (suppressed) or psi_rest
+    # (released from lactational suppression).
+    conceiving_idx <- integer(0)  # rows conceiving THIS year (S3->S1, S2->S1)
+
+    if (length(s2_idx) > 0L) {
+      calf_ids <- pop$calf_id[s2_idx]
+
+      # Check calf survival by looking up calf_id in the current population
+      calf_rows  <- match(calf_ids, pop$id)
+      calf_alive <- !is.na(calf_rows)
+
+      # Founder S2 mothers (calf_id = 0): no tracked calf, use stochastic
+      # calf survival based on s2_year as proxy for calf age
+      founder_s2 <- calf_ids == 0L
+      if (any(founder_s2)) {
+        k_founder <- pop$s2_year[s2_idx[founder_s2]]
+        calf_alive[founder_s2] <- runif(sum(founder_s2)) < surv_vec[k_founder]
+      }
+
+      k <- pop$s2_year[s2_idx]
+
+      # Conception probability depends on calf fate
+      psi_eff <- ifelse(calf_alive, psi_nurse_yr, psi_rest_yr)
+      conceive <- runif(length(s2_idx)) < psi_eff
+      conceiving_idx <- c(conceiving_idx, s2_idx[conceive])
+
+      # Determine new state:
+      #   Conceive → S1 (pregnant)
+      #   Not conceive, calf alive, k < wa_breed → stay S2 (calf still dependent)
+      #   Not conceive, calf alive, k >= wa_breed → S3 (calf weaned)
+      #   Not conceive, calf dead → S3 (released)
+      new_state <- rep(3L, length(s2_idx))
+      new_state[conceive] <- 1L
+      stay_s2 <- !conceive & calf_alive & k < wa_breed
+      new_state[stay_s2] <- 2L
+
+      set(pop, i = s2_idx, j = "breed_state", value = new_state)
+
+      # Update s2_year: increment for stayers, clear for leavers
+      new_s2y <- rep(NA_integer_, length(s2_idx))
+      new_s2y[stay_s2] <- k[stay_s2] + 1L
+      set(pop, i = s2_idx, j = "s2_year", value = new_s2y)
+
+      # Clear calf_id for mothers leaving S2
+      leaving_s2 <- which(new_state != 2L)
+      if (length(leaving_s2) > 0L) {
+        set(pop, i = s2_idx[leaving_s2], j = "calf_id", value = 0L)
+      }
+    }
+
+    # ── S3 transitions ──
+    if (length(s3_idx) > 0L) {
+      new_state_s3 <- ifelse(runif(length(s3_idx)) < psi_rest_yr, 1L, 3L)
+      set(pop, i = s3_idx, j = "breed_state", value = new_state_s3)
+      conceiving_idx <- c(conceiving_idx, s3_idx[new_state_s3 == 1L])
+    }
+
+    # ── S1 → S2: pregnant females give birth (deterministic) ──
+    if (length(mother_rows) > 0L) {
+      set(pop, i = mother_rows, j = "breed_state", value = 2L)
+      set(pop, i = mother_rows, j = "s2_year",     value = 1L)
+      # calf_id will be set below after offspring are realized
+    }
+
+    # ── Assign paternity at the moment of conception ──
+    # Uses THIS year's population -- after this year's mortality, aging, and
+    # pod-shuffling have already happened above -- i.e. whoever is actually
+    # alive right now. This is intentionally NOT deferred to birth next year;
+    # see assign_pending_fathers() for the CKMR rationale.
+    if (length(conceiving_idx) > 0L) {
+      res           <- assign_pending_fathers(pop, conceiving_idx, bull_registry)
+      pop           <- res$pop
+      bull_registry <- res$bull_registry
+    }
+
+    # ─── 6. Realize births from paternity assigned at conception ─────────
+    # mother_rows (snapshotted above) conceived LAST year; their
+    # pending_fathers were already resolved then, against the population
+    # alive at that time. This step only materializes offspring rows -- no
+    # new mating decisions (father draw, max_females cap, bull tenure) are
+    # made here.
+    if (length(mother_rows) > 0L) {
+      pending_list  <- pop$pending_fathers[mother_rows]
+      litter_sizes  <- lengths(pending_list)
+      has_offspring <- which(litter_sizes > 0L)
+
+      if (length(has_offspring) > 0L) {
+        off_mother_idx <- rep(has_offspring, times = litter_sizes[has_offspring])
+        off_mother_id  <- pop$id[mother_rows[off_mother_idx]]
+        off_father_id  <- unlist(pending_list[has_offspring], use.names = FALSE)
+        n_yoy          <- length(off_father_id)
+
+        # ── Assign sex, maturity age, and fertility to newborns ──
+        yoy_sex <- sample(c("F", "M"), n_yoy,
+                          prob = c(female_fraction, 1 - female_fraction),
+                          replace = TRUE)
+
+        yoy_mat_age <- integer(n_yoy)
+        yoy_is_f    <- yoy_sex == "F"
+        if (any(yoy_is_f))  yoy_mat_age[yoy_is_f]  <- sample_mat_ages(ogive_f, sum(yoy_is_f))
+        if (any(!yoy_is_f)) yoy_mat_age[!yoy_is_f] <- sample_mat_ages(ogive_m, sum(!yoy_is_f))
+
+        yoy_fertile <- rep(TRUE, n_yoy)
+        if (infertility_f > 0 && any(yoy_is_f))
+          yoy_fertile[yoy_is_f]  <- runif(sum(yoy_is_f))  >= infertility_f
+        if (infertility_m > 0 && any(!yoy_is_f))
+          yoy_fertile[!yoy_is_f] <- runif(sum(!yoy_is_f)) >= infertility_m
+
+        yoy_ids <- seq.int(next_id, length.out = n_yoy)
+
+        yoy <- data.table(
+          id              = yoy_ids,
+          birth_year      = as.integer(yr),
+          age             = 0L,
+          sex             = yoy_sex,
+          mat_age         = yoy_mat_age,
+          mother_id       = off_mother_id,
+          father_id       = off_father_id,
+          breed_state     = NA_integer_,
+          fertile         = yoy_fertile,
+          population      = 1L,
+          calf_id         = 0L,
+          s2_year         = NA_integer_,
+          pending_fathers = vector("list", n_yoy)
+        )
+
+        # Offspring inherit their mother's pod and superpod
+        if (use_pods) {
+          off_pods <- pop$pod[mother_rows[off_mother_idx]]
+          set(yoy, j = "pod",      value = off_pods)
+          set(yoy, j = "superpod", value = pod_to_sp[off_pods])
+        }
+
+        # Set calf_id on mothers to their first offspring (the one that drives
+        # the breeding cycle). For litter_size > 1, the first offspring is the
+        # "dependent" calf.
+        first_yoy_per_mother <- yoy_ids[!duplicated(off_mother_idx)]
+        set(pop, i = mother_rows[has_offspring], j = "calf_id",
+            value = first_yoy_per_mother)
+
+        next_id <- next_id + n_yoy
+        pop <- rbindlist(list(pop, yoy), use.names = TRUE)
+      }
+
+      # Clear resolved pending_fathers for this cohort (whether or not any
+      # offspring were actually realized -- e.g. no males were available
+      # back at conception time). Note: a bare list of NULLs is ambiguous
+      # with data.table's "delete this list column" sentinel when combined
+      # with `i`, so it must be wrapped in an extra list() layer.
+      set(pop, i = mother_rows, j = "pending_fathers",
+          value = list(rep(list(NULL), length(mother_rows))))
+    } # end breeding
+
+    # ─── 7. Snapshot ─────────────────────────────────────────────────────
+    # Store a deep copy, dropping internal columns
+    if (do_snapshots && yr %in% s_years) {
+      snap_idx <- snap_idx + 1L
+      snap_pop <- copy(pop)
+      # Drop internal tracking columns
+      for (col in internal_cols) {
+        if (col %in% names(snap_pop)) set(snap_pop, j = col, value = NULL)
+      }
+      snapshots[[snap_idx]] <- snap_pop
+      snap_names <- c(snap_names, as.character(yr))
+    }
+
+    # ─── 8. Record population metrics ────────────────────────────────────
+    yr_counts <- pop[, .N, by = .(sex, age)]
+    set(yr_counts, j = "year", value = as.integer(yr))
+    pop_counts[[yr]] <- yr_counts
+
+    if (yr == 1L || yr == burn_in || yr == total_years || yr %% 10L == 0L) {
+      phase <- if (yr <= burn_in) "burn-in" else "post-burn-in"
+      message(sprintf(
+        "  year %4d (%s)  |  N = %s", yr, phase,
+        format(nrow(pop), big.mark = ",")
+      ))
+    }
+
+  } # end main loop
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # COMPILE AND RETURN
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  pop_summary <- rbindlist(pop_counts)
+  if (do_snapshots) names(snapshots) <- snap_names
+
+  message(sprintf(
+    "Simulation complete: %d total years (%d burn-in + %d post), final N = %s, %d snapshots stored.",
+    total_years, burn_in, num_years,
+    format(nrow(pop), big.mark = ","), length(snapshots)
+  ))
+
+  out <- list(
+    pop_summary = pop_summary,
+    snapshots   = snapshots,
+    pod_to_sp   = pod_to_sp,
+    sim_config  = sim_config
+  )
+  if (use_dd) out$depletion <- depletion_vec
+  if (use_fishing) {
+    out$F_t          <- F_t
+    out$selectivity  <- sel_vec
+  }
+  invisible(out)
 }
