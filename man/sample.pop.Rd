@@ -6,6 +6,7 @@
 \usage{
 sample.pop(
   sim_output,
+  n_years = NULL,
   n_trips,
   n_sets,
   sample_size,
@@ -19,6 +20,13 @@ sample.pop(
 \arguments{
 \item{sim_output}{List returned by \code{simulate.pop()}.  Must contain
 \code{snapshots}, \code{pod_to_sp}, and \code{sim_config}.}
+
+\item{n_years}{NULL or integer. Number of the most recent snapshot years
+(from \code{sim_output$snapshots}) to sample from. If \code{NULL}
+(default), all available snapshots are used. If provided, must not
+exceed the number of snapshots stored in \code{sim_output}; otherwise an
+error is thrown. For example, \code{n_years = 3} restricts sampling to
+the three most recent snapshot years, dropping earlier ones.}
 
 \item{n_trips}{Integer. Number of sampling trips per year.}
 

@@ -180,13 +180,14 @@ simulate.pop(sim_config, num_years, sample_years = NULL)
 
 ```r
 sample.pop(
-  sim_output, n_trips, n_sets, sample_size,
+  sim_output, n_years = NULL, n_trips, n_sets, sample_size,
   sample_per = "set", sampling = "superpod",
   stickiness_set = 1, stickiness_trip = 1,
   superpod_pool = NULL
 )
 ```
 
+- `n_years` (Sep 21): NULL (default, use all stored snapshots) or a positive integer restricting sampling to the `n_years` most recent snapshot years in `sim_output$snapshots`. Errors if `n_years` exceeds the number of available snapshots.
 - `sample_per`: `"set"` (sample_size per set) or `"trip"` (sample_size per trip, distributed across sets)
 - `superpod_pool`: NULL (all available) or list of int vectors per trip (spatial structure)
 - Within a trip, the same superpod is encountered across all sets

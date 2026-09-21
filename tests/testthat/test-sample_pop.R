@@ -73,6 +73,41 @@ test_that("errors when simulate.pop() was run without snapshots", {
   )
 })
 
+test_that("errors on invalid n_years", {
+  sim <- sim_output_no_pods()
+  expect_error(
+    sample.pop(sim, n_years = 0, n_trips = 1, n_sets = 1, sample_size = 5),
+    "n_years"
+  )
+  expect_error(
+    sample.pop(sim, n_years = 1.5, n_trips = 1, n_sets = 1, sample_size = 5),
+    "n_years"
+  )
+})
+
+test_that("errors when n_years exceeds available snapshots", {
+  sim <- sim_output_no_pods()  # 2 snapshots
+  expect_error(
+    sample.pop(sim, n_years = 3, n_trips = 1, n_sets = 1, sample_size = 5),
+    "n_years.*exceeds"
+  )
+})
+
+test_that("n_years restricts sampling to the most recent snapshot years", {
+  sim <- sim_output_pods()  # 3 snapshots
+  all_years <- sort(as.integer(names(sim$snapshots)))
+
+  out <- suppressMessages(
+    sample.pop(sim, n_years = 2, n_trips = 1, n_sets = 1, sample_size = 5)
+  )
+  expect_setequal(unique(out$year), tail(all_years, 2))
+
+  out_full <- suppressMessages(
+    sample.pop(sim, n_trips = 1, n_sets = 1, sample_size = 5)
+  )
+  expect_setequal(unique(out_full$year), all_years)
+})
+
 # ── Output structure ──────────────────────────────────────────────────────
 
 test_that("samples without pods have no pod/superpod columns", {

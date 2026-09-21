@@ -8,6 +8,12 @@
 #'
 #' @param sim_output List returned by \code{simulate.pop()}.  Must contain
 #'   \code{snapshots}, \code{pod_to_sp}, and \code{sim_config}.
+#' @param n_years NULL or integer. Number of the most recent snapshot years
+#'   (from \code{sim_output$snapshots}) to sample from. If \code{NULL}
+#'   (default), all available snapshots are used. If provided, must not
+#'   exceed the number of snapshots stored in \code{sim_output}; otherwise an
+#'   error is thrown. For example, \code{n_years = 3} restricts sampling to
+#'   the three most recent snapshot years, dropping earlier ones.
 #' @param n_trips Integer. Number of sampling trips per year.
 #' @param n_sets Integer. Number of purse seine sets per trip.
 #' @param sample_size Integer. Number of individuals sampled.  Interpretation
@@ -152,6 +158,7 @@
 #' @export
 #' @rawNamespace export(sample.pop)
 sample.pop <- function(sim_output,
+                       n_years         = NULL,
                        n_trips,
                        n_sets,
                        sample_size,
@@ -174,6 +181,12 @@ sample.pop <- function(sim_output,
     stop("`sim_output` is missing required fields: ",
          paste(missing_fields, collapse = ", "),
          ". Did you pass the output of simulate.pop()?")
+
+  if (!is.null(n_years)) {
+    if (!is.numeric(n_years) || length(n_years) != 1L || n_years < 1 ||
+        n_years != round(n_years))
+      stop("`n_years` must be NULL or a positive integer.")
+  }
 
   if (!is.numeric(n_trips) || length(n_trips) != 1L || n_trips < 1 ||
       n_trips != round(n_trips))
@@ -219,6 +232,18 @@ sample.pop <- function(sim_output,
   # Must have at least one snapshot to sample from
   if (length(snapshots) == 0L) {
     stop("No snapshots available. Run simulate.pop() with sample_years specified.")
+  }
+
+  # ── Restrict to the n_years most recent snapshots (if requested) ──
+  if (!is.null(n_years)) {
+    if (n_years > length(snapshots))
+      stop("`n_years` (", n_years, ") exceeds the number of snapshots available ",
+           "in `sim_output` (", length(snapshots), "). Re-run simulate.pop() ",
+           "with more `sample_years`, or reduce `n_years`.")
+
+    snap_years  <- as.integer(names(snapshots))
+    keep_years  <- sort(snap_years, decreasing = TRUE)[seq_len(n_years)]
+    snapshots   <- snapshots[as.character(sort(keep_years))]
   }
 
   # ── Parse sex-specific stickiness ──

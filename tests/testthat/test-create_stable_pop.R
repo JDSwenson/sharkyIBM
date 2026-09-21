@@ -164,8 +164,8 @@ test_that("s0 calibration is reproducible with a fixed seed", {
 
 test_that("pod/superpod parameters pass through when supplied", {
   cfg <- quick_config_pods()
-  expect_equal(cfg$pod_size, 10)
-  expect_equal(cfg$superpod_size, 3)
+  expect_equal(cfg$pod_size, 20)
+  expect_equal(cfg$superpod_size, 25)
   expect_equal(cfg$stickiness_year, 0.9)
   expect_equal(cfg$male_behavior, "random")
   expect_equal(cfg$weaning_age, 2L)

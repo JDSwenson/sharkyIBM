@@ -614,18 +614,19 @@ simulate.pop <- function(sim_config,
   }
 
   pop <- data.table(
-    id          = seq_len(n_init),
-    birth_year  = 0L,
-    age         = init_ages,
-    sex         = init_sex,
-    mat_age     = init_mat_age,
-    mother_id   = 0L,
-    father_id   = 0L,
-    breed_state = init_breed_state,
-    fertile     = init_fertile,
-    population  = 1L,
-    calf_id     = init_calf_id,
-    s2_year     = init_s2_year
+    id              = seq_len(n_init),
+    birth_year      = 0L,
+    age             = init_ages,
+    sex             = init_sex,
+    mat_age         = init_mat_age,
+    mother_id       = 0L,
+    father_id       = 0L,
+    breed_state     = init_breed_state,
+    fertile         = init_fertile,
+    population      = 1L,
+    calf_id         = init_calf_id,
+    s2_year         = init_s2_year,
+    pending_fathers = vector("list", n_init)
   )
 
   # ── Pod / superpod initialisation ──
@@ -643,6 +644,155 @@ simulate.pop <- function(sim_config,
     set(pop, j = "superpod", value = pod_to_sp[pod_vec])
   }
 
+  # ── Mating-system bookkeeping (bull tenure registry, strong_bull mode) ──
+  bull_registry <- NULL
+  if (use_pods && !is.null(male_behavior) && male_behavior == "strong_bull") {
+    bull_registry <- rep(0L, n_sp)
+  }
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # PATERNITY ASSIGNMENT AT CONCEPTION
+  # ═══════════════════════════════════════════════════════════════════════
+  # Paternity (mate selection, the max_females-per-year cap, and strong_bull
+  # tenure) is resolved once, at the moment of conception, using whichever
+  # males are alive/mature/fertile *at that time*.  This matters for CKMR:
+  # kinship probabilities condition on who was alive when offspring were
+  # conceived, not on who happens to still be alive a year later when the
+  # calf is actually born.  The result is stashed per-mother in
+  # `pending_fathers` (a list column: one integer vector of father ids per
+  # prospective offspring in her litter) and realized into actual offspring
+  # rows the following year, once she is found in breed_state S1 (see the
+  # birth step in the main loop below).
+  assign_pending_fathers <- function(pop, conceiving_idx, bull_registry) {
+    n_conceive <- length(conceiving_idx)
+    if (n_conceive == 0L) return(list(pop = pop, bull_registry = bull_registry))
+
+    mature_male_mask <- pop$sex == "M" & pop$age >= pop$mat_age & pop$fertile
+    if (!any(mature_male_mask)) {
+      # No mature/fertile males available at conception: these pregnancies
+      # cannot be assigned a father. pending_fathers stays empty (NULL) for
+      # them, so no offspring will be realized for them at birth.
+      return(list(pop = pop, bull_registry = bull_registry))
+    }
+
+    n_mates_vec  <- sample(num_mates, n_conceive, replace = TRUE)
+    litter_sizes <- 1L + rpois(n_conceive, lambda = litter_size - 1)
+    max_nm       <- max(n_mates_vec)
+
+    father_mat <- matrix(NA_integer_, nrow = n_conceive, ncol = max_nm)
+
+    if (use_pods) {
+      mother_superpods <- pop$superpod[conceiving_idx]
+      all_mature_ids   <- pop$id[mature_male_mask]
+      all_mature_sps   <- pop$superpod[mature_male_mask]
+
+      if (!is.null(male_behavior) && male_behavior == "strong_bull") {
+        # ── Strong bull mode ──
+        alive_ids <- pop$id
+        bull_registry[!bull_registry %in% c(0L, alive_ids)] <- 0L
+
+        vacant <- which(bull_registry == 0L)
+        if (length(vacant) > 0L) {
+          mature_males_dt <- data.table(
+            id       = all_mature_ids,
+            age      = pop$age[mature_male_mask],
+            superpod = all_mature_sps
+          )
+          candidates <- mature_males_dt[
+            superpod %in% vacant,
+            # Indexing by position avoids sample()'s length-1 numeric footgun.
+            .(bull_id = id[sample.int(.N, 1L)]),
+            by = superpod
+          ]
+          if (nrow(candidates) > 0L) {
+            bull_registry[candidates$superpod] <- candidates$bull_id
+          }
+        }
+
+        for (sp in unique(mother_superpods)) {
+          sp_mask <- which(mother_superpods == sp)
+          bull_id <- bull_registry[sp]
+          if (bull_id == 0L)
+            bull_id <- all_mature_ids[sample.int(length(all_mature_ids), 1L)]
+          father_mat[sp_mask, ] <- bull_id
+        }
+
+      } else {
+        # ── Random mating mode ──
+        father_by_sp <- split(all_mature_ids, all_mature_sps)
+        for (sp in unique(mother_superpods)) {
+          sp_mask   <- which(mother_superpods == sp)
+          n_sp_moms <- length(sp_mask)
+          pool      <- father_by_sp[[as.character(sp)]]
+          if (is.null(pool) || length(pool) == 0L) pool <- all_mature_ids
+          father_mat[sp_mask, ] <-
+            pool[sample.int(length(pool), n_sp_moms * max_nm, replace = TRUE)]
+        }
+      }
+
+    } else {
+      # ── No pod structure: global random mating ──
+      all_father_ids <- pop$id[mature_male_mask]
+      father_mat[]   <-
+        all_father_ids[sample.int(length(all_father_ids), n_conceive * max_nm,
+                                   replace = TRUE)]
+    }
+
+    # ── Assign each prospective offspring in the litter a father ──
+    n_off          <- sum(litter_sizes)
+    off_mother_idx <- rep(seq_len(n_conceive), times = litter_sizes)
+    off_n_mates    <- n_mates_vec[off_mother_idx]
+    mate_col       <- as.integer(ceiling(runif(n_off) * off_n_mates))
+    off_father_id  <- father_mat[cbind(off_mother_idx, mate_col)]
+
+    # ── Enforce max_females cap (per breeding season, at time of mating) ──
+    if (!is.null(max_females)) {
+      fid_tab  <- table(off_father_id)
+      over_ids <- as.integer(names(fid_tab[fid_tab > max_females]))
+
+      if (length(over_ids) > 0L) {
+        if (use_pods) {
+          avail_by_sp <- split(all_mature_ids, all_mature_sps)
+        }
+        for (fid in over_ids) {
+          idx  <- which(off_father_id == fid)
+          keep <- sample(idx, max_females)
+          redo <- setdiff(idx, keep)
+          for (ri in redo) {
+            if (use_pods) {
+              mom_sp <- pop$superpod[conceiving_idx[off_mother_idx[ri]]]
+              pool   <- avail_by_sp[[as.character(mom_sp)]]
+              pool   <- pool[pool != fid]
+              if (is.null(pool) || length(pool) == 0L)
+                pool <- all_mature_ids[all_mature_ids != fid]
+            } else {
+              pool <- all_father_ids[all_father_ids != fid]
+            }
+            if (length(pool) > 0L)
+              off_father_id[ri] <- pool[sample.int(length(pool), 1L)]
+          }
+        }
+      }
+    }
+
+    # ── Store each mother's prospective litter of fathers as a list-column ──
+    father_lists <- unname(split(off_father_id, off_mother_idx))
+    set(pop, i = conceiving_idx, j = "pending_fathers", value = father_lists)
+
+    list(pop = pop, bull_registry = bull_registry)
+  }
+
+  # Founders that start pregnant (breed_state == 1) had no simulated
+  # conception step (it happened before the simulation began); use the
+  # initial population itself as the best available approximation of who
+  # was alive/mature/fertile at that (unobserved) conception.
+  init_conceiving <- which(pop$breed_state == 1L)
+  if (length(init_conceiving) > 0L) {
+    res_init      <- assign_pending_fathers(pop, init_conceiving, bull_registry)
+    pop           <- res_init$pop
+    bull_registry <- res_init$bull_registry
+  }
+
   # ═══════════════════════════════════════════════════════════════════════════
   # PRE-ALLOCATE OUTPUT STORAGE
   # ═══════════════════════════════════════════════════════════════════════════
@@ -655,13 +805,8 @@ simulate.pop <- function(sim_config,
 
   depletion_vec <- if (use_dd) numeric(total_years) else NULL
 
-  bull_registry <- NULL
-  if (use_pods && !is.null(male_behavior) && male_behavior == "strong_bull") {
-    bull_registry <- rep(0L, n_sp)
-  }
-
   # Columns to drop from snapshots (internal tracking only)
-  internal_cols <- c("s2_year")
+  internal_cols <- c("s2_year", "pending_fathers")
 
   message(sprintf(
     "Starting simulation: %d years burn-in (2 x max_age) + %d years = %d total  (N0 = %s)",
@@ -793,6 +938,8 @@ simulate.pop <- function(sim_config,
     # For each S2 mother, check if her calf is still alive. The calf's fate
     # determines whether the mother uses psi_nurse (suppressed) or psi_rest
     # (released from lactational suppression).
+    conceiving_idx <- integer(0)  # rows conceiving THIS year (S3->S1, S2->S1)
+
     if (length(s2_idx) > 0L) {
       calf_ids <- pop$calf_id[s2_idx]
 
@@ -813,6 +960,7 @@ simulate.pop <- function(sim_config,
       # Conception probability depends on calf fate
       psi_eff <- ifelse(calf_alive, psi_nurse_yr, psi_rest_yr)
       conceive <- runif(length(s2_idx)) < psi_eff
+      conceiving_idx <- c(conceiving_idx, s2_idx[conceive])
 
       # Determine new state:
       #   Conceive → S1 (pregnant)
@@ -842,174 +990,103 @@ simulate.pop <- function(sim_config,
     if (length(s3_idx) > 0L) {
       new_state_s3 <- ifelse(runif(length(s3_idx)) < psi_rest_yr, 1L, 3L)
       set(pop, i = s3_idx, j = "breed_state", value = new_state_s3)
+      conceiving_idx <- c(conceiving_idx, s3_idx[new_state_s3 == 1L])
     }
 
     # ── S1 → S2: pregnant females give birth (deterministic) ──
     if (length(mother_rows) > 0L) {
       set(pop, i = mother_rows, j = "breed_state", value = 2L)
       set(pop, i = mother_rows, j = "s2_year",     value = 1L)
-      # calf_id will be set below after offspring are created
+      # calf_id will be set below after offspring are realized
     }
 
-    # ─── 6. Create offspring ─────────────────────────────────────────────
-    mature_male_mask <- pop$sex == "M" & pop$age >= pop$mat_age & pop$fertile
-    has_males <- any(mature_male_mask)
+    # ── Assign paternity at the moment of conception ──
+    # Uses THIS year's population -- after this year's mortality, aging, and
+    # pod-shuffling have already happened above -- i.e. whoever is actually
+    # alive right now. This is intentionally NOT deferred to birth next year;
+    # see assign_pending_fathers() for the CKMR rationale.
+    if (length(conceiving_idx) > 0L) {
+      res           <- assign_pending_fathers(pop, conceiving_idx, bull_registry)
+      pop           <- res$pop
+      bull_registry <- res$bull_registry
+    }
 
-    if (length(mother_rows) > 0L && has_males) {
-      n_mothers <- length(mother_rows)
+    # ─── 6. Realize births from paternity assigned at conception ─────────
+    # mother_rows (snapshotted above) conceived LAST year; their
+    # pending_fathers were already resolved then, against the population
+    # alive at that time. This step only materializes offspring rows -- no
+    # new mating decisions (father draw, max_females cap, bull tenure) are
+    # made here.
+    if (length(mother_rows) > 0L) {
+      pending_list  <- pop$pending_fathers[mother_rows]
+      litter_sizes  <- lengths(pending_list)
+      has_offspring <- which(litter_sizes > 0L)
 
-      n_mates_vec  <- sample(num_mates, n_mothers, replace = TRUE)
-      litter_sizes <- 1L + rpois(n_mothers, lambda = litter_size - 1)
-      max_nm       <- max(n_mates_vec)
+      if (length(has_offspring) > 0L) {
+        off_mother_idx <- rep(has_offspring, times = litter_sizes[has_offspring])
+        off_mother_id  <- pop$id[mother_rows[off_mother_idx]]
+        off_father_id  <- unlist(pending_list[has_offspring], use.names = FALSE)
+        n_yoy          <- length(off_father_id)
 
-      # ── Build father matrix ──
-      father_mat <- matrix(NA_integer_, nrow = n_mothers, ncol = max_nm)
+        # ── Assign sex, maturity age, and fertility to newborns ──
+        yoy_sex <- sample(c("F", "M"), n_yoy,
+                          prob = c(female_fraction, 1 - female_fraction),
+                          replace = TRUE)
 
-      if (use_pods) {
-        mother_superpods <- pop$superpod[mother_rows]
-        all_mature_ids   <- pop$id[mature_male_mask]
-        all_mature_sps   <- pop$superpod[mature_male_mask]
+        yoy_mat_age <- integer(n_yoy)
+        yoy_is_f    <- yoy_sex == "F"
+        if (any(yoy_is_f))  yoy_mat_age[yoy_is_f]  <- sample_mat_ages(ogive_f, sum(yoy_is_f))
+        if (any(!yoy_is_f)) yoy_mat_age[!yoy_is_f] <- sample_mat_ages(ogive_m, sum(!yoy_is_f))
 
-        if (!is.null(male_behavior) && male_behavior == "strong_bull") {
-          # ── Strong bull mode ──
-          alive_ids <- pop$id
-          bull_registry[!bull_registry %in% c(0L, alive_ids)] <- 0L
+        yoy_fertile <- rep(TRUE, n_yoy)
+        if (infertility_f > 0 && any(yoy_is_f))
+          yoy_fertile[yoy_is_f]  <- runif(sum(yoy_is_f))  >= infertility_f
+        if (infertility_m > 0 && any(!yoy_is_f))
+          yoy_fertile[!yoy_is_f] <- runif(sum(!yoy_is_f)) >= infertility_m
 
-          vacant <- which(bull_registry == 0L)
-          if (length(vacant) > 0L) {
-            mature_males_dt <- data.table(
-              id       = all_mature_ids,
-              age      = pop$age[mature_male_mask],
-              superpod = all_mature_sps
-            )
-            candidates <- mature_males_dt[
-              superpod %in% vacant,
-              # Indexing by position avoids sample()'s length-1 numeric footgun.
-              .(bull_id = id[sample.int(.N, 1L)]),
-              by = superpod
-            ]
-            if (nrow(candidates) > 0L) {
-              bull_registry[candidates$superpod] <- candidates$bull_id
-            }
-          }
+        yoy_ids <- seq.int(next_id, length.out = n_yoy)
 
-          for (sp in unique(mother_superpods)) {
-            sp_mask <- which(mother_superpods == sp)
-            bull_id <- bull_registry[sp]
-            if (bull_id == 0L)
-              bull_id <- all_mature_ids[sample.int(length(all_mature_ids), 1L)]
-            father_mat[sp_mask, ] <- bull_id
-          }
+        yoy <- data.table(
+          id              = yoy_ids,
+          birth_year      = as.integer(yr),
+          age             = 0L,
+          sex             = yoy_sex,
+          mat_age         = yoy_mat_age,
+          mother_id       = off_mother_id,
+          father_id       = off_father_id,
+          breed_state     = NA_integer_,
+          fertile         = yoy_fertile,
+          population      = 1L,
+          calf_id         = 0L,
+          s2_year         = NA_integer_,
+          pending_fathers = vector("list", n_yoy)
+        )
 
-        } else {
-          # ── Random mating mode ──
-          father_by_sp <- split(all_mature_ids, all_mature_sps)
-          for (sp in unique(mother_superpods)) {
-            sp_mask   <- which(mother_superpods == sp)
-            n_sp_moms <- length(sp_mask)
-            pool      <- father_by_sp[[as.character(sp)]]
-            if (is.null(pool) || length(pool) == 0L) pool <- all_mature_ids
-            father_mat[sp_mask, ] <-
-              pool[sample.int(length(pool), n_sp_moms * max_nm, replace = TRUE)]
-          }
+        # Offspring inherit their mother's pod and superpod
+        if (use_pods) {
+          off_pods <- pop$pod[mother_rows[off_mother_idx]]
+          set(yoy, j = "pod",      value = off_pods)
+          set(yoy, j = "superpod", value = pod_to_sp[off_pods])
         }
 
-      } else {
-        # ── No pod structure: global random mating ──
-        all_father_ids <- pop$id[mature_male_mask]
-        father_mat[]   <-
-          all_father_ids[sample.int(length(all_father_ids), n_mothers * max_nm,
-                                     replace = TRUE)]
+        # Set calf_id on mothers to their first offspring (the one that drives
+        # the breeding cycle). For litter_size > 1, the first offspring is the
+        # "dependent" calf.
+        first_yoy_per_mother <- yoy_ids[!duplicated(off_mother_idx)]
+        set(pop, i = mother_rows[has_offspring], j = "calf_id",
+            value = first_yoy_per_mother)
+
+        next_id <- next_id + n_yoy
+        pop <- rbindlist(list(pop, yoy), use.names = TRUE)
       }
 
-      # ── Assign offspring to parents ──
-      n_yoy <- sum(litter_sizes)
-      off_mother_idx <- rep(seq_len(n_mothers), times = litter_sizes)
-      off_n_mates    <- n_mates_vec[off_mother_idx]
-      mate_col       <- as.integer(ceiling(runif(n_yoy) * off_n_mates))
-
-      off_mother_id <- pop$id[mother_rows[off_mother_idx]]
-      off_father_id <- father_mat[cbind(off_mother_idx, mate_col)]
-
-      # ── Enforce max_females cap ──
-      if (!is.null(max_females)) {
-        fid_tab  <- table(off_father_id)
-        over_ids <- as.integer(names(fid_tab[fid_tab > max_females]))
-
-        if (length(over_ids) > 0L) {
-          if (use_pods) {
-            avail_by_sp <- split(all_mature_ids, all_mature_sps)
-          }
-          for (fid in over_ids) {
-            idx     <- which(off_father_id == fid)
-            keep    <- sample(idx, max_females)
-            redo    <- setdiff(idx, keep)
-            for (ri in redo) {
-              if (use_pods) {
-                mom_sp <- pop$superpod[mother_rows[off_mother_idx[ri]]]
-                pool   <- avail_by_sp[[as.character(mom_sp)]]
-                pool   <- pool[pool != fid]
-                if (is.null(pool) || length(pool) == 0L)
-                  pool <- all_mature_ids[all_mature_ids != fid]
-              } else {
-                pool <- all_father_ids[all_father_ids != fid]
-              }
-              if (length(pool) > 0L)
-                off_father_id[ri] <- pool[sample.int(length(pool), 1L)]
-            }
-          }
-        }
-      }
-
-      # ── Assign sex, maturity age, and fertility to newborns ──
-      yoy_sex <- sample(c("F", "M"), n_yoy,
-                        prob = c(female_fraction, 1 - female_fraction),
-                        replace = TRUE)
-
-      yoy_mat_age <- integer(n_yoy)
-      yoy_is_f    <- yoy_sex == "F"
-      if (any(yoy_is_f))  yoy_mat_age[yoy_is_f]  <- sample_mat_ages(ogive_f, sum(yoy_is_f))
-      if (any(!yoy_is_f)) yoy_mat_age[!yoy_is_f] <- sample_mat_ages(ogive_m, sum(!yoy_is_f))
-
-      yoy_fertile <- rep(TRUE, n_yoy)
-      if (infertility_f > 0 && any(yoy_is_f))
-        yoy_fertile[yoy_is_f]  <- runif(sum(yoy_is_f))  >= infertility_f
-      if (infertility_m > 0 && any(!yoy_is_f))
-        yoy_fertile[!yoy_is_f] <- runif(sum(!yoy_is_f)) >= infertility_m
-
-      yoy_ids <- seq.int(next_id, length.out = n_yoy)
-
-      yoy <- data.table(
-        id          = yoy_ids,
-        birth_year  = as.integer(yr),
-        age         = 0L,
-        sex         = yoy_sex,
-        mat_age     = yoy_mat_age,
-        mother_id   = off_mother_id,
-        father_id   = off_father_id,
-        breed_state = NA_integer_,
-        fertile     = yoy_fertile,
-        population  = 1L,
-        calf_id     = 0L,
-        s2_year     = NA_integer_
-      )
-
-      # Offspring inherit their mother's pod and superpod
-      if (use_pods) {
-        off_pods <- pop$pod[mother_rows[off_mother_idx]]
-        set(yoy, j = "pod",      value = off_pods)
-        set(yoy, j = "superpod", value = pod_to_sp[off_pods])
-      }
-
-      # Set calf_id on mothers to their first offspring (the one that drives
-      # the breeding cycle). For litter_size > 1, the first offspring is the
-      # "dependent" calf.
-      first_yoy_per_mother <- yoy_ids[!duplicated(off_mother_idx)]
-      set(pop, i = mother_rows, j = "calf_id", value = first_yoy_per_mother)
-
-      next_id <- next_id + n_yoy
-      pop <- rbindlist(list(pop, yoy), use.names = TRUE)
-
+      # Clear resolved pending_fathers for this cohort (whether or not any
+      # offspring were actually realized -- e.g. no males were available
+      # back at conception time). Note: a bare list of NULLs is ambiguous
+      # with data.table's "delete this list column" sentinel when combined
+      # with `i`, so it must be wrapped in an extra list() layer.
+      set(pop, i = mother_rows, j = "pending_fathers",
+          value = list(rep(list(NULL), length(mother_rows))))
     } # end breeding
 
     # ─── 7. Snapshot ─────────────────────────────────────────────────────
